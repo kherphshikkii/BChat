@@ -22,10 +22,8 @@ Built with native Android (Kotlin) and Bluetooth Classic RFCOMM sockets.
 
 Home, Nearby devices, Chat, Permission, Permission denied, Settings.
 
-Add screenshots to a `docs/` folder and link them here:
-
 ```markdown
-![image1](docs/image1.png)
+![Home](docs/image1.png)
 ![image2](docs/image2.png)
 ```
 
