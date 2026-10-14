@@ -20,10 +20,8 @@ Built with native Android (Kotlin) and Bluetooth Classic RFCOMM sockets.
 
 ## Screens
 
-Home, Nearby devices, Chat, Permission, Permission denied, Settings.
-
 ```markdown
-![Home](docs/image1.png)
+![image1](https://github.com/kherphshikkii/BChat/blob/9fb3a13d0d653c6654e247e2fd6eb176419ad406/docs/image1.png)
 ![image2](docs/image2.png)
 ```
 
