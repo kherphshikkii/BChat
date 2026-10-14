@@ -20,8 +20,11 @@ Built with native Android (Kotlin) and Bluetooth Classic RFCOMM sockets.
 
 ## Screens
 
-![image1](https://github.com/kherphshikkii/BChat/blob/9fb3a13d0d653c6654e247e2fd6eb176419ad406/docs/image1.png?raw=true)
-![image2](docs/image2.png)
+<p>
+  <img src="docs/image1.png" width="200" alt="image1">
+  <img src="docs/image2.png" width="200" alt="image2">
+  <img src="docs/image3.png" width="200" alt="image3">
+</p>
 
 ## How it works
 
