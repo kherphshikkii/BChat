@@ -25,8 +25,8 @@ Home, Nearby devices, Chat, Permission, Permission denied, Settings.
 Add screenshots to a `docs/` folder and link them here:
 
 ```markdown
-<img src="docs/image1.png" width="200" alt="image1">
-  <img src="docs/image2.png" width="200" alt="image2">
+![image1](docs/image1.png)
+![image2](docs/image2.png)
 ```
 
 ## How it works
