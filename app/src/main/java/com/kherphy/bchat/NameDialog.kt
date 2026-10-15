@@ -9,7 +9,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 
 object NameDialog {
 
-    fun show(activity: AppCompatActivity) {
+    fun show(activity: AppCompatActivity, onDone: () -> Unit = {}) {
         val input = EditText(activity).apply {
             setText(Build.MODEL)
             setSelectAllOnFocus(true)
@@ -29,6 +29,7 @@ object NameDialog {
             .setCancelable(false)
             .setPositiveButton("Save") { _, _ ->
                 Prefs.setName(activity, input.text.toString())
+                onDone()
             }
             .show()
     }

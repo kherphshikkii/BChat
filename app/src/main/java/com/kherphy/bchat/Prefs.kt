@@ -41,4 +41,12 @@ object Prefs {
     fun setAskBefore(context: Context, value: Boolean) {
         prefs(context).edit().putBoolean(KEY_ASK, value).apply()
     }
+    private const val KEY_ASKED_NOTIF = "asked_notifications"
+
+    fun hasAskedNotifications(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_ASKED_NOTIF, false)
+
+    fun setAskedNotifications(context: Context) {
+        prefs(context).edit().putBoolean(KEY_ASKED_NOTIF, true).apply()
+    }
 }

@@ -1,5 +1,6 @@
 package com.kherphy.bchat
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
@@ -7,7 +8,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.widget.Toast
@@ -62,6 +65,10 @@ class HomeActivity : AppCompatActivity() {
         }
     }
 
+    private val notificationLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
         super.onCreate(savedInstanceState)
@@ -89,7 +96,11 @@ class HomeActivity : AppCompatActivity() {
         }
         binding.btnVisible.setOnClickListener { makeVisible() }
 
-        if (!Prefs.hasName(this)) NameDialog.show(this)
+        if (Prefs.hasName(this)) {
+            askNotificationPermission()
+        } else {
+            NameDialog.show(this) { askNotificationPermission() }
+        }
     }
 
     override fun onStart() {
@@ -101,6 +112,7 @@ class HomeActivity : AppCompatActivity() {
             IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
             ContextCompat.RECEIVER_EXPORTED
         )
+        ChatService.start(this)
         ChatConnection.refreshListening()
         renderStatus()
         loadConversations()
@@ -186,6 +198,18 @@ class HomeActivity : AppCompatActivity() {
 
     private fun openChat() {
         startActivity(Intent(this, MainActivity::class.java))
+    }
+
+    private fun askNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (!BtPermissions.hasAll(this)) return
+        if (Prefs.hasAskedNotifications(this)) return
+        val granted = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.POST_NOTIFICATIONS
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) return
+        Prefs.setAskedNotifications(this)
+        notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
     private fun toast(message: String) {

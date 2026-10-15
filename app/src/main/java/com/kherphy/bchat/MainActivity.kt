@@ -62,8 +62,6 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, insets ->
             val bars = insets.getInsets(
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime()
