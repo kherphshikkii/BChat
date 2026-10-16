@@ -4,6 +4,7 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.UUID
 
 data class Conversation(
     val address: String,
@@ -49,14 +50,21 @@ object ChatStore {
         val chatMessages = messages
             .filter { it.type != MessageType.NOTICE }
             .takeLast(MAX_MESSAGES)
-        if (chatMessages.isEmpty()) return
+
+        if (chatMessages.isEmpty()) {
+            data.remove(address)
+            write()
+            return
+        }
 
         val array = JSONArray()
         chatMessages.forEach { message ->
             val item = JSONObject()
+                .put("id", message.id)
                 .put("text", message.text)
                 .put("time", message.timestamp)
                 .put("sent", message.type == MessageType.SENT)
+                .put("deleted", message.deleted)
             message.imagePath?.let { path -> item.put("image", File(path).name) }
             array.put(item)
         }
@@ -72,12 +80,18 @@ object ChatStore {
             val item = array.getJSONObject(i)
             val type = if (item.optBoolean("sent")) MessageType.SENT else MessageType.RECEIVED
             val time = item.getLong("time")
+            val id = item.optString("id", "").ifEmpty { UUID.randomUUID().toString() }
             val imageName = item.optString("image", "")
-            if (imageName.isNotEmpty()) {
-                val image = File(imageDir(), imageName)
-                if (image.exists()) result.add(Message("", time, type, image.absolutePath))
-            } else {
-                result.add(Message(item.getString("text"), time, type))
+            when {
+                item.optBoolean("deleted") ->
+                    result.add(Message("", time, type, null, id, true))
+                imageName.isNotEmpty() -> {
+                    val image = File(imageDir(), imageName)
+                    if (image.exists()) {
+                        result.add(Message("", time, type, image.absolutePath, id))
+                    }
+                }
+                else -> result.add(Message(item.getString("text"), time, type, null, id))
             }
         }
         return result
@@ -92,10 +106,10 @@ object ChatStore {
             val array = entry.optJSONArray("messages") ?: continue
             if (array.length() == 0) continue
             val last = array.getJSONObject(array.length() - 1)
-            val lastText = if (last.optString("image", "").isNotEmpty()) {
-                "📷 Photo"
-            } else {
-                last.getString("text")
+            val lastText = when {
+                last.optBoolean("deleted") -> "Message unsent"
+                last.optString("image", "").isNotEmpty() -> "📷 Photo"
+                else -> last.getString("text")
             }
             result.add(
                 Conversation(

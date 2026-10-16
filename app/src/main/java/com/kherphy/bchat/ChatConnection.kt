@@ -35,11 +35,15 @@ object ChatConnection {
     private const val TYPE_IMAGE_CHUNK: Byte = 4
     private const val TYPE_IMAGE_END: Byte = 5
     private const val TYPE_IMAGE_CANCEL: Byte = 6
+    private const val TYPE_UNSEND: Byte = 7
+    private const val TYPE_TYPING: Byte = 8
 
     private const val CHUNK_SIZE = 8192
     private const val MAX_CHUNK_SIZE = 65536
     private const val MAX_IMAGE_BYTES = 3_000_000
+    private const val MAX_ID_LENGTH = 64
     private const val REQUEST_TIMEOUT_MS = 30_000L
+    private const val TYPING_TIMEOUT_MS = 6_000L
 
     const val MAX_MESSAGE_LENGTH = 1000
 
@@ -70,11 +74,14 @@ object ChatConnection {
         fun onStateChanged(state: State) {}
         fun onConnectionFailed(reason: String) {}
         fun onMessageAdded(message: Message) {}
+        fun onMessageChanged(message: Message) {}
+        fun onMessageRemoved(id: String) {}
         fun onHistoryReloaded() {}
         fun onRemoteNameChanged(name: String) {}
         fun onIncomingRequest(name: String) {}
         fun onIncomingImageProgress(received: Int, total: Int) {}
         fun onIncomingImageEnded() {}
+        fun onTypingChanged(typing: Boolean) {}
     }
 
     var state: State = State.IDLE
@@ -82,6 +89,8 @@ object ChatConnection {
     var remoteName: String = ""
         private set
     var remoteAddress: String = ""
+        private set
+    var remoteTyping: Boolean = false
         private set
 
     private val messages = mutableListOf<Message>()
@@ -100,6 +109,7 @@ object ChatConnection {
     private var connectedThread: ConnectedThread? = null
     private var pendingSocket: BluetoothSocket? = null
     private val pendingTimeout = Runnable { rejectPending() }
+    private val typingExpire = Runnable { setRemoteTyping(false) }
 
     fun init(context: Context) {
         appContext = context.applicationContext
@@ -177,6 +187,7 @@ object ChatConnection {
         connectThread = null
         connectedThread?.cancel()
         connectedThread = null
+        setRemoteTyping(false)
 
         if (wasConnected) addNotice("You disconnected")
         setState(State.IDLE)
@@ -189,11 +200,14 @@ object ChatConnection {
             onResult(false)
             return
         }
+        val id = UUID.randomUUID().toString()
         sendExecutor.execute {
-            val ok = thread.write(TYPE_MESSAGE, text)
+            val ok = thread.writeText(id, text)
             handler.post {
                 if (ok) {
-                    addToHistory(Message(text, System.currentTimeMillis(), MessageType.SENT))
+                    addToHistory(
+                        Message(text, System.currentTimeMillis(), MessageType.SENT, null, id)
+                    )
                 }
                 onResult(ok)
             }
@@ -211,20 +225,63 @@ object ChatConnection {
             handler.post { onResult(SendResult.FAILED) }
             return transfer
         }
+        val id = UUID.randomUUID().toString()
         sendExecutor.execute {
-            val result = thread.writeImage(file, transfer) { sent, total ->
+            val result = thread.writeImage(file, id, transfer) { sent, total ->
                 handler.post { onProgress(sent, total) }
             }
             handler.post {
                 if (result == SendResult.SENT) {
                     addToHistory(
-                        Message("", System.currentTimeMillis(), MessageType.SENT, file.absolutePath)
+                        Message(
+                            "",
+                            System.currentTimeMillis(),
+                            MessageType.SENT,
+                            file.absolutePath,
+                            id
+                        )
                     )
                 }
                 onResult(result)
             }
         }
         return transfer
+    }
+
+    fun sendTyping(typing: Boolean) {
+        val thread = connectedThread
+        if (state != State.CONNECTED || thread == null) return
+        sendExecutor.execute { thread.writeTyping(typing) }
+    }
+
+    fun deleteForMe(id: String) {
+        val index = messages.indexOfFirst { it.id == id }
+        if (index < 0) return
+        val removed = messages.removeAt(index)
+        removed.imagePath?.let { File(it).delete() }
+        persist()
+        listeners.forEach { it.onMessageRemoved(id) }
+    }
+
+    fun unsend(id: String, onResult: (Boolean) -> Unit) {
+        val thread = connectedThread
+        val target = messages.firstOrNull { it.id == id }
+        val allowed = state == State.CONNECTED &&
+                thread != null &&
+                target != null &&
+                target.type == MessageType.SENT &&
+                !target.deleted
+        if (!allowed || thread == null) {
+            onResult(false)
+            return
+        }
+        sendExecutor.execute {
+            val ok = thread.writeUnsend(id)
+            handler.post {
+                if (ok) markDeleted(id)
+                onResult(ok)
+            }
+        }
     }
 
     fun openSavedChat(address: String, name: String) {
@@ -262,6 +319,14 @@ object ChatConnection {
         listeners.forEach { it.onStateChanged(newState) }
     }
 
+    private fun setRemoteTyping(value: Boolean) {
+        handler.removeCallbacks(typingExpire)
+        if (value) handler.postDelayed(typingExpire, TYPING_TIMEOUT_MS)
+        if (remoteTyping == value) return
+        remoteTyping = value
+        listeners.forEach { it.onTypingChanged(value) }
+    }
+
     private fun notifyFailed(reason: String) {
         listeners.forEach { it.onConnectionFailed(reason) }
     }
@@ -270,6 +335,17 @@ object ChatConnection {
         messages.add(message)
         if (message.type != MessageType.NOTICE) persist()
         listeners.forEach { it.onMessageAdded(message) }
+    }
+
+    private fun markDeleted(id: String) {
+        val index = messages.indexOfFirst { it.id == id }
+        if (index < 0) return
+        val old = messages[index]
+        old.imagePath?.let { File(it).delete() }
+        val updated = old.copy(text = "", imagePath = null, deleted = true)
+        messages[index] = updated
+        persist()
+        listeners.forEach { it.onMessageChanged(updated) }
     }
 
     private fun addNotice(label: String) {
@@ -361,6 +437,7 @@ object ChatConnection {
         val device = socket.remoteDevice
         remoteAddress = device.address
         remoteName = device.name ?: device.address
+        setRemoteTyping(false)
 
         if (remoteAddress != historyAddress) loadHistory(remoteAddress)
 
@@ -372,32 +449,51 @@ object ChatConnection {
         setState(State.CONNECTED)
 
         val myName = Prefs.getName(ctx())
-        sendExecutor.execute { thread.write(TYPE_HELLO, myName) }
+        sendExecutor.execute { thread.writeHello(myName) }
     }
 
     private fun connectionLost(thread: ConnectedThread) {
         if (thread !== connectedThread) return
         connectedThread = null
+        setRemoteTyping(false)
         addNotice("Connection lost")
         setState(State.IDLE)
         startListening()
     }
 
-    private fun packetReceived(thread: ConnectedThread, type: Byte, text: String) {
+    private fun helloReceived(thread: ConnectedThread, text: String) {
         if (thread !== connectedThread) return
-        when (type) {
-            TYPE_HELLO -> {
-                val name = text.trim().take(30)
-                if (name.isNotEmpty()) {
-                    remoteName = name
-                    persist()
-                    listeners.forEach { it.onRemoteNameChanged(name) }
-                }
-            }
-            TYPE_MESSAGE -> {
-                addToHistory(Message(text, System.currentTimeMillis(), MessageType.RECEIVED))
-            }
-        }
+        val name = text.trim().take(30)
+        if (name.isEmpty()) return
+        remoteName = name
+        persist()
+        listeners.forEach { it.onRemoteNameChanged(name) }
+    }
+
+    private fun textReceived(thread: ConnectedThread, id: String, text: String) {
+        if (thread !== connectedThread) return
+        setRemoteTyping(false)
+        addToHistory(
+            Message(
+                text,
+                System.currentTimeMillis(),
+                MessageType.RECEIVED,
+                null,
+                id.take(MAX_ID_LENGTH)
+            )
+        )
+    }
+
+    private fun unsendReceived(thread: ConnectedThread, id: String) {
+        if (thread !== connectedThread) return
+        val target = messages.firstOrNull { it.id == id.take(MAX_ID_LENGTH) } ?: return
+        if (target.type != MessageType.RECEIVED || target.deleted) return
+        markDeleted(target.id)
+    }
+
+    private fun typingReceived(thread: ConnectedThread, typing: Boolean) {
+        if (thread !== connectedThread) return
+        setRemoteTyping(typing)
     }
 
     private fun incomingProgress(thread: ConnectedThread, received: Int, total: Int) {
@@ -415,13 +511,20 @@ object ChatConnection {
         addNotice("A photo was too large to receive")
     }
 
-    private fun imageReceived(thread: ConnectedThread, file: File) {
+    private fun imageReceived(thread: ConnectedThread, file: File, id: String) {
         if (thread !== connectedThread) {
             file.delete()
             return
         }
+        setRemoteTyping(false)
         addToHistory(
-            Message("", System.currentTimeMillis(), MessageType.RECEIVED, file.absolutePath)
+            Message(
+                "",
+                System.currentTimeMillis(),
+                MessageType.RECEIVED,
+                file.absolutePath,
+                id.take(MAX_ID_LENGTH)
+            )
         )
         listeners.forEach { it.onIncomingImageEnded() }
     }
@@ -495,21 +598,35 @@ object ChatConnection {
 
         private var incomingFile: File? = null
         private var incomingOut: FileOutputStream? = null
+        private var incomingId = ""
         private var incomingTotal = 0
         private var incomingReceived = 0
 
         override fun run() {
             try {
                 while (true) {
-                    when (val type = input.readByte()) {
-                        TYPE_HELLO, TYPE_MESSAGE -> {
-                            val text = input.readUTF()
-                            handler.post { packetReceived(this@ConnectedThread, type, text) }
+                    when (input.readByte()) {
+                        TYPE_HELLO -> {
+                            val name = input.readUTF()
+                            handler.post { helloReceived(this@ConnectedThread, name) }
                         }
-                        TYPE_IMAGE_START -> startIncoming(input.readInt())
+                        TYPE_MESSAGE -> {
+                            val id = input.readUTF()
+                            val text = input.readUTF()
+                            handler.post { textReceived(this@ConnectedThread, id, text) }
+                        }
+                        TYPE_IMAGE_START -> startIncoming(input.readInt(), input.readUTF())
                         TYPE_IMAGE_CHUNK -> readChunk()
                         TYPE_IMAGE_END -> finishIncoming()
                         TYPE_IMAGE_CANCEL -> cancelIncoming()
+                        TYPE_UNSEND -> {
+                            val id = input.readUTF()
+                            handler.post { unsendReceived(this@ConnectedThread, id) }
+                        }
+                        TYPE_TYPING -> {
+                            val typing = input.readBoolean()
+                            handler.post { typingReceived(this@ConnectedThread, typing) }
+                        }
                         else -> throw IOException("Unknown packet type")
                     }
                 }
@@ -519,10 +636,11 @@ object ChatConnection {
             }
         }
 
-        private fun startIncoming(total: Int) {
+        private fun startIncoming(total: Int, id: String) {
             discardIncoming()
             incomingTotal = total
             incomingReceived = 0
+            incomingId = id
             if (total <= 0 || total > MAX_IMAGE_BYTES) {
                 handler.post { incomingRejected(this@ConnectedThread) }
                 return
@@ -566,13 +684,14 @@ object ChatConnection {
 
         private fun finishIncoming() {
             val file = incomingFile
+            val id = incomingId
             val complete = incomingOut != null && incomingReceived == incomingTotal
             closeIncomingStream()
             incomingFile = null
             incomingTotal = 0
             incomingReceived = 0
             if (complete && file != null) {
-                handler.post { imageReceived(this@ConnectedThread, file) }
+                handler.post { imageReceived(this@ConnectedThread, file, id) }
             } else {
                 file?.delete()
                 handler.post { incomingEnded(this@ConnectedThread) }
@@ -600,10 +719,44 @@ object ChatConnection {
             incomingReceived = 0
         }
 
-        fun write(type: Byte, text: String): Boolean = try {
+        fun writeHello(name: String): Boolean = try {
             synchronized(output) {
-                output.writeByte(type.toInt())
+                output.writeByte(TYPE_HELLO.toInt())
+                output.writeUTF(name)
+                output.flush()
+            }
+            true
+        } catch (e: IOException) {
+            false
+        }
+
+        fun writeText(id: String, text: String): Boolean = try {
+            synchronized(output) {
+                output.writeByte(TYPE_MESSAGE.toInt())
+                output.writeUTF(id)
                 output.writeUTF(text)
+                output.flush()
+            }
+            true
+        } catch (e: IOException) {
+            false
+        }
+
+        fun writeUnsend(id: String): Boolean = try {
+            synchronized(output) {
+                output.writeByte(TYPE_UNSEND.toInt())
+                output.writeUTF(id)
+                output.flush()
+            }
+            true
+        } catch (e: IOException) {
+            false
+        }
+
+        fun writeTyping(typing: Boolean): Boolean = try {
+            synchronized(output) {
+                output.writeByte(TYPE_TYPING.toInt())
+                output.writeBoolean(typing)
                 output.flush()
             }
             true
@@ -613,6 +766,7 @@ object ChatConnection {
 
         fun writeImage(
             file: File,
+            id: String,
             transfer: ImageTransfer,
             onProgress: (Int, Int) -> Unit
         ): SendResult {
@@ -621,6 +775,7 @@ object ChatConnection {
                 synchronized(output) {
                     output.writeByte(TYPE_IMAGE_START.toInt())
                     output.writeInt(total)
+                    output.writeUTF(id)
                     output.flush()
                 }
                 val buffer = ByteArray(CHUNK_SIZE)

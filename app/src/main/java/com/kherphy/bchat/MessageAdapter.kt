@@ -2,6 +2,7 @@ package com.kherphy.bchat
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Typeface
 import android.util.LruCache
 import android.view.LayoutInflater
 import android.view.ViewGroup
@@ -18,7 +19,9 @@ import java.util.Locale
 import kotlin.math.max
 
 class MessageAdapter(
-    private val onImageClick: (String) -> Unit
+    private val onImageClick: (String) -> Unit,
+    private val onLongClick: (Message) -> Unit,
+    private val nameProvider: () -> String
 ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
     private val messages = mutableListOf<Message>()
@@ -39,12 +42,27 @@ class MessageAdapter(
         notifyDataSetChanged()
     }
 
+    fun replace(message: Message) {
+        val index = messages.indexOfFirst { it.id == message.id }
+        if (index < 0) return
+        messages[index] = message
+        notifyItemChanged(index)
+    }
+
+    fun remove(id: String) {
+        val index = messages.indexOfFirst { it.id == id }
+        if (index < 0) return
+        messages.removeAt(index)
+        notifyItemRemoved(index)
+    }
+
     override fun getItemCount(): Int = messages.size
 
     override fun getItemViewType(position: Int): Int {
         val message = messages[position]
         return when {
             message.type == MessageType.NOTICE -> VIEW_NOTICE
+            message.deleted -> VIEW_UNSENT
             message.imagePath != null && message.type == MessageType.SENT -> VIEW_IMAGE_SENT
             message.imagePath != null -> VIEW_IMAGE_RECEIVED
             message.type == MessageType.SENT -> VIEW_SENT
@@ -73,15 +91,27 @@ class MessageAdapter(
             is SentHolder -> {
                 holder.binding.tvMessage.text = message.text
                 holder.binding.tvTime.text = time
+                holder.binding.tvMessage.setOnLongClickListener {
+                    onLongClick(message)
+                    true
+                }
             }
             is ReceivedHolder -> {
                 holder.binding.tvMessage.text = message.text
                 holder.binding.tvTime.text = time
+                holder.binding.tvMessage.setOnLongClickListener {
+                    onLongClick(message)
+                    true
+                }
             }
             is SentImageHolder -> {
                 bindImage(holder.binding.ivImage, message.imagePath)
                 holder.binding.ivImage.setOnClickListener {
                     message.imagePath?.let(onImageClick)
+                }
+                holder.binding.ivImage.setOnLongClickListener {
+                    onLongClick(message)
+                    true
                 }
                 holder.binding.tvTime.text = time
             }
@@ -90,11 +120,34 @@ class MessageAdapter(
                 holder.binding.ivImage.setOnClickListener {
                     message.imagePath?.let(onImageClick)
                 }
+                holder.binding.ivImage.setOnLongClickListener {
+                    onLongClick(message)
+                    true
+                }
                 holder.binding.tvTime.text = time
             }
-            is NoticeHolder -> {
-                holder.binding.tvNotice.text = message.text
+            is NoticeHolder -> bindNotice(holder, message)
+        }
+    }
+
+    private fun bindNotice(holder: NoticeHolder, message: Message) {
+        val view = holder.binding.tvNotice
+        if (message.deleted) {
+            view.text = if (message.type == MessageType.SENT) {
+                "You unsent a message"
+            } else {
+                "${nameProvider()} unsent a message"
             }
+            view.setTypeface(null, Typeface.ITALIC)
+            view.setOnLongClickListener {
+                onLongClick(message)
+                true
+            }
+        } else {
+            view.text = message.text
+            view.setTypeface(null, Typeface.NORMAL)
+            view.setOnLongClickListener(null)
+            view.isLongClickable = false
         }
     }
 
@@ -144,6 +197,7 @@ class MessageAdapter(
         private const val VIEW_NOTICE = 2
         private const val VIEW_IMAGE_SENT = 3
         private const val VIEW_IMAGE_RECEIVED = 4
+        private const val VIEW_UNSENT = 5
         private const val THUMB_SIDE = 640
         private val CACHE_KB = (Runtime.getRuntime().maxMemory() / 1024 / 8).toInt()
     }

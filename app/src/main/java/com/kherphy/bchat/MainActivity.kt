@@ -1,9 +1,18 @@
 package com.kherphy.bchat
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.DialogInterface
 import android.content.res.ColorStateList
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.text.Editable
 import android.text.InputFilter
+import android.text.TextWatcher
 import android.view.View
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
@@ -16,13 +25,24 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.kherphy.bchat.databinding.ActivityMainBinding
 import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
-    private val adapter = MessageAdapter { path -> ImageViewerActivity.open(this, path) }
+
+    private val adapter = MessageAdapter(
+        onImageClick = { path -> ImageViewerActivity.open(this, path) },
+        onLongClick = { message -> showActions(message) },
+        nameProvider = { ChatConnection.remoteName.ifBlank { "They" } }
+    )
+
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private val stopTyping = Runnable { setTypingOff() }
+    private var typingSent = false
+    private var lastTypingSent = 0L
 
     private var preparing = false
     private var activeTransfer: ChatConnection.ImageTransfer? = null
@@ -49,6 +69,14 @@ class MainActivity : AppCompatActivity() {
             scrollToBottom()
         }
 
+        override fun onMessageChanged(message: Message) {
+            adapter.replace(message)
+        }
+
+        override fun onMessageRemoved(id: String) {
+            adapter.remove(id)
+        }
+
         override fun onHistoryReloaded() {
             adapter.setAll(ChatConnection.history)
             scrollToBottom()
@@ -56,6 +84,7 @@ class MainActivity : AppCompatActivity() {
 
         override fun onRemoteNameChanged(name: String) {
             binding.tvDeviceName.text = name
+            renderTyping()
         }
 
         override fun onIncomingRequest(name: String) {
@@ -70,6 +99,10 @@ class MainActivity : AppCompatActivity() {
         override fun onIncomingImageEnded() {
             receivePercent = -1
             renderTransfer()
+        }
+
+        override fun onTypingChanged(typing: Boolean) {
+            renderTyping()
         }
     }
 
@@ -99,6 +132,15 @@ class MainActivity : AppCompatActivity() {
 
         binding.etMessage.filters =
             arrayOf(InputFilter.LengthFilter(ChatConnection.MAX_MESSAGE_LENGTH))
+        binding.etMessage.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+
+            override fun afterTextChanged(s: Editable?) {
+                onTextEdited(s?.toString().orEmpty())
+            }
+        })
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -121,6 +163,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
+        if (!::binding.isInitialized) return
+        setTypingOff()
         ChatConnection.removeListener(connectionListener)
     }
 
@@ -161,8 +205,46 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun leaveChat() {
+        setTypingOff()
         ChatConnection.disconnect()
         finish()
+    }
+
+    private fun onTextEdited(text: String) {
+        if (text.isBlank()) {
+            setTypingOff()
+            return
+        }
+        if (ChatConnection.state != ChatConnection.State.CONNECTED) return
+
+        val now = SystemClock.elapsedRealtime()
+        if (!typingSent || now - lastTypingSent > TYPING_REFRESH_MS) {
+            typingSent = true
+            lastTypingSent = now
+            ChatConnection.sendTyping(true)
+        }
+        uiHandler.removeCallbacks(stopTyping)
+        uiHandler.postDelayed(stopTyping, TYPING_STOP_MS)
+    }
+
+    private fun setTypingOff() {
+        uiHandler.removeCallbacks(stopTyping)
+        if (typingSent) {
+            typingSent = false
+            ChatConnection.sendTyping(false)
+        }
+    }
+
+    private fun renderTyping() {
+        val show = ChatConnection.remoteTyping &&
+                ChatConnection.state == ChatConnection.State.CONNECTED
+        if (show) {
+            val name = ChatConnection.remoteName.ifBlank { "They" }
+            binding.tvTyping.text = "$name is typing…"
+            binding.tvTyping.visibility = View.VISIBLE
+        } else {
+            binding.tvTyping.visibility = View.GONE
+        }
     }
 
     private fun sendMessage() {
@@ -183,6 +265,66 @@ class MainActivity : AppCompatActivity() {
                 toast("Message not sent. Check the connection and try again.")
             }
         }
+    }
+
+    private fun showActions(message: Message) {
+        val options = mutableListOf<String>()
+        if (message.text.isNotEmpty() && !message.deleted) options.add(ACTION_COPY)
+        options.add(ACTION_REMOVE)
+        val canUnsend = message.type == MessageType.SENT &&
+                !message.deleted &&
+                ChatConnection.state == ChatConnection.State.CONNECTED
+        if (canUnsend) options.add(ACTION_UNSEND)
+
+        MaterialAlertDialogBuilder(this)
+            .setItems(options.toTypedArray()) { _, which ->
+                when (options[which]) {
+                    ACTION_COPY -> copyText(message.text)
+                    ACTION_REMOVE -> confirmRemove(message)
+                    else -> confirmUnsend(message)
+                }
+            }
+            .show()
+    }
+
+    private fun confirmRemove(message: Message) {
+        val name = ChatConnection.remoteName.ifBlank { "The other person" }
+        confirm(
+            "Remove for you?",
+            "This is removed from your phone only. $name can still see it.",
+            "Remove"
+        ) {
+            ChatConnection.deleteForMe(message.id)
+        }
+    }
+
+    private fun confirmUnsend(message: Message) {
+        confirm(
+            "Unsend message?",
+            "This removes the message for everyone in this chat.",
+            "Unsend"
+        ) {
+            ChatConnection.unsend(message.id) { ok ->
+                if (!ok) toast("Couldn't unsend. Check the connection and try again.")
+            }
+        }
+    }
+
+    private fun confirm(title: String, message: String, action: String, onConfirm: () -> Unit) {
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(title)
+            .setMessage(message)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton(action) { _, _ -> onConfirm() }
+            .show()
+        dialog.getButton(DialogInterface.BUTTON_POSITIVE)
+            .setTextColor(ContextCompat.getColor(this, R.color.status_disconnected))
+    }
+
+    private fun copyText(text: String) {
+        val clipboard = getSystemService(ClipboardManager::class.java)
+        clipboard.setPrimaryClip(ClipData.newPlainText("message", text))
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) toast("Copied")
     }
 
     private fun sendPhoto(uri: Uri) {
@@ -301,6 +443,7 @@ class MainActivity : AppCompatActivity() {
                 renderTransfer()
             }
         }
+        renderTyping()
     }
 
     private fun showStatus(text: String, colorRes: Int) {
@@ -312,5 +455,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun toast(message: String) {
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    }
+
+    companion object {
+        private const val TYPING_REFRESH_MS = 3_000L
+        private const val TYPING_STOP_MS = 4_000L
+        private const val ACTION_COPY = "Copy"
+        private const val ACTION_REMOVE = "Remove for you"
+        private const val ACTION_UNSEND = "Unsend for everyone"
     }
 }
