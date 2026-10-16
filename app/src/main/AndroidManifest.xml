@@ -39,6 +39,9 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
         <activity
+            android:name=".ImageViewerActivity"
+            android:exported="false" />
+        <activity
             android:name=".HomeActivity"
             android:exported="false"
             android:screenOrientation="portrait" />

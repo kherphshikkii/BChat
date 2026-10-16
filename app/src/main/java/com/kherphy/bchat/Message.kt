@@ -9,5 +9,6 @@ enum class MessageType {
 data class Message(
     val text: String,
     val timestamp: Long,
-    val type: MessageType
+    val type: MessageType,
+    val imagePath: String? = null
 )

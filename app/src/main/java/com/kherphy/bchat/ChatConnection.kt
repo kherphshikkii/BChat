@@ -7,12 +7,14 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothServerSocket
 import android.bluetooth.BluetoothSocket
 import android.content.Context
-import android.util.Log
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -29,6 +31,14 @@ object ChatConnection {
 
     private const val TYPE_HELLO: Byte = 1
     private const val TYPE_MESSAGE: Byte = 2
+    private const val TYPE_IMAGE_START: Byte = 3
+    private const val TYPE_IMAGE_CHUNK: Byte = 4
+    private const val TYPE_IMAGE_END: Byte = 5
+    private const val TYPE_IMAGE_CANCEL: Byte = 6
+
+    private const val CHUNK_SIZE = 8192
+    private const val MAX_CHUNK_SIZE = 65536
+    private const val MAX_IMAGE_BYTES = 3_000_000
     private const val REQUEST_TIMEOUT_MS = 30_000L
 
     const val MAX_MESSAGE_LENGTH = 1000
@@ -40,6 +50,22 @@ object ChatConnection {
         CONNECTED
     }
 
+    enum class SendResult {
+        SENT,
+        FAILED,
+        CANCELLED
+    }
+
+    class ImageTransfer {
+        @Volatile
+        var cancelled = false
+            private set
+
+        fun cancel() {
+            cancelled = true
+        }
+    }
+
     interface Listener {
         fun onStateChanged(state: State) {}
         fun onConnectionFailed(reason: String) {}
@@ -47,6 +73,8 @@ object ChatConnection {
         fun onHistoryReloaded() {}
         fun onRemoteNameChanged(name: String) {}
         fun onIncomingRequest(name: String) {}
+        fun onIncomingImageProgress(received: Int, total: Int) {}
+        fun onIncomingImageEnded() {}
     }
 
     var state: State = State.IDLE
@@ -170,6 +198,33 @@ object ChatConnection {
                 onResult(ok)
             }
         }
+    }
+
+    fun sendImage(
+        file: File,
+        onProgress: (Int, Int) -> Unit,
+        onResult: (SendResult) -> Unit
+    ): ImageTransfer {
+        val transfer = ImageTransfer()
+        val thread = connectedThread
+        if (state != State.CONNECTED || thread == null) {
+            handler.post { onResult(SendResult.FAILED) }
+            return transfer
+        }
+        sendExecutor.execute {
+            val result = thread.writeImage(file, transfer) { sent, total ->
+                handler.post { onProgress(sent, total) }
+            }
+            handler.post {
+                if (result == SendResult.SENT) {
+                    addToHistory(
+                        Message("", System.currentTimeMillis(), MessageType.SENT, file.absolutePath)
+                    )
+                }
+                onResult(result)
+            }
+        }
+        return transfer
     }
 
     fun openSavedChat(address: String, name: String) {
@@ -345,6 +400,32 @@ object ChatConnection {
         }
     }
 
+    private fun incomingProgress(thread: ConnectedThread, received: Int, total: Int) {
+        if (thread !== connectedThread) return
+        listeners.forEach { it.onIncomingImageProgress(received, total) }
+    }
+
+    private fun incomingEnded(thread: ConnectedThread) {
+        if (thread !== connectedThread) return
+        listeners.forEach { it.onIncomingImageEnded() }
+    }
+
+    private fun incomingRejected(thread: ConnectedThread) {
+        if (thread !== connectedThread) return
+        addNotice("A photo was too large to receive")
+    }
+
+    private fun imageReceived(thread: ConnectedThread, file: File) {
+        if (thread !== connectedThread) {
+            file.delete()
+            return
+        }
+        addToHistory(
+            Message("", System.currentTimeMillis(), MessageType.RECEIVED, file.absolutePath)
+        )
+        listeners.forEach { it.onIncomingImageEnded() }
+    }
+
     private class AcceptThread : Thread() {
         private var server: BluetoothServerSocket? = null
         @Volatile private var cancelled = false
@@ -412,16 +493,111 @@ object ChatConnection {
         private val output = DataOutputStream(socket.outputStream)
         @Volatile private var closedByUs = false
 
+        private var incomingFile: File? = null
+        private var incomingOut: FileOutputStream? = null
+        private var incomingTotal = 0
+        private var incomingReceived = 0
+
         override fun run() {
             try {
                 while (true) {
-                    val type = input.readByte()
-                    val text = input.readUTF()
-                    handler.post { packetReceived(this@ConnectedThread, type, text) }
+                    when (val type = input.readByte()) {
+                        TYPE_HELLO, TYPE_MESSAGE -> {
+                            val text = input.readUTF()
+                            handler.post { packetReceived(this@ConnectedThread, type, text) }
+                        }
+                        TYPE_IMAGE_START -> startIncoming(input.readInt())
+                        TYPE_IMAGE_CHUNK -> readChunk()
+                        TYPE_IMAGE_END -> finishIncoming()
+                        TYPE_IMAGE_CANCEL -> cancelIncoming()
+                        else -> throw IOException("Unknown packet type")
+                    }
                 }
             } catch (e: IOException) {
+                discardIncoming()
                 if (!closedByUs) handler.post { connectionLost(this@ConnectedThread) }
             }
+        }
+
+        private fun startIncoming(total: Int) {
+            discardIncoming()
+            incomingTotal = total
+            incomingReceived = 0
+            if (total <= 0 || total > MAX_IMAGE_BYTES) {
+                handler.post { incomingRejected(this@ConnectedThread) }
+                return
+            }
+            val file = ChatStore.newImageFile()
+            val out = try {
+                FileOutputStream(file)
+            } catch (e: IOException) {
+                null
+            }
+            if (out == null) return
+            incomingFile = file
+            incomingOut = out
+            handler.post { incomingProgress(this@ConnectedThread, 0, total) }
+        }
+
+        private fun readChunk() {
+            val length = input.readInt()
+            if (length < 0 || length > MAX_CHUNK_SIZE) throw IOException("Bad chunk size")
+            val data = ByteArray(length)
+            input.readFully(data)
+
+            val out = incomingOut ?: return
+            try {
+                out.write(data)
+            } catch (e: IOException) {
+                discardIncoming()
+                handler.post { incomingEnded(this@ConnectedThread) }
+                return
+            }
+            incomingReceived += length
+            if (incomingReceived > incomingTotal) {
+                discardIncoming()
+                handler.post { incomingEnded(this@ConnectedThread) }
+                return
+            }
+            val received = incomingReceived
+            val total = incomingTotal
+            handler.post { incomingProgress(this@ConnectedThread, received, total) }
+        }
+
+        private fun finishIncoming() {
+            val file = incomingFile
+            val complete = incomingOut != null && incomingReceived == incomingTotal
+            closeIncomingStream()
+            incomingFile = null
+            incomingTotal = 0
+            incomingReceived = 0
+            if (complete && file != null) {
+                handler.post { imageReceived(this@ConnectedThread, file) }
+            } else {
+                file?.delete()
+                handler.post { incomingEnded(this@ConnectedThread) }
+            }
+        }
+
+        private fun cancelIncoming() {
+            discardIncoming()
+            handler.post { incomingEnded(this@ConnectedThread) }
+        }
+
+        private fun closeIncomingStream() {
+            try {
+                incomingOut?.close()
+            } catch (e: IOException) {
+            }
+            incomingOut = null
+        }
+
+        private fun discardIncoming() {
+            closeIncomingStream()
+            incomingFile?.delete()
+            incomingFile = null
+            incomingTotal = 0
+            incomingReceived = 0
         }
 
         fun write(type: Byte, text: String): Boolean = try {
@@ -433,6 +609,51 @@ object ChatConnection {
             true
         } catch (e: IOException) {
             false
+        }
+
+        fun writeImage(
+            file: File,
+            transfer: ImageTransfer,
+            onProgress: (Int, Int) -> Unit
+        ): SendResult {
+            try {
+                val total = file.length().toInt()
+                synchronized(output) {
+                    output.writeByte(TYPE_IMAGE_START.toInt())
+                    output.writeInt(total)
+                    output.flush()
+                }
+                val buffer = ByteArray(CHUNK_SIZE)
+                var sent = 0
+                FileInputStream(file).use { source ->
+                    while (true) {
+                        if (transfer.cancelled) {
+                            synchronized(output) {
+                                output.writeByte(TYPE_IMAGE_CANCEL.toInt())
+                                output.flush()
+                            }
+                            return SendResult.CANCELLED
+                        }
+                        val read = source.read(buffer)
+                        if (read < 0) break
+                        synchronized(output) {
+                            output.writeByte(TYPE_IMAGE_CHUNK.toInt())
+                            output.writeInt(read)
+                            output.write(buffer, 0, read)
+                            output.flush()
+                        }
+                        sent += read
+                        onProgress(sent, total)
+                    }
+                }
+                synchronized(output) {
+                    output.writeByte(TYPE_IMAGE_END.toInt())
+                    output.flush()
+                }
+                return SendResult.SENT
+            } catch (e: IOException) {
+                return SendResult.FAILED
+            }
         }
 
         fun cancel() {

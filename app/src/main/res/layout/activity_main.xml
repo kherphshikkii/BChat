@@ -39,7 +39,6 @@
                 android:layout_height="wrap_content"
                 android:ellipsize="end"
                 android:maxLines="1"
-                android:text="Maria's Galaxy"
                 android:textColor="@color/text_primary"
                 android:textSize="18sp" />
 
@@ -89,6 +88,51 @@
         android:padding="16dp" />
 
     <LinearLayout
+        android:id="@+id/transferBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/input_bg"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="16dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="8dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/tvTransfer"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="@color/text_primary"
+                android:textSize="14sp" />
+
+            <com.google.android.material.progressindicator.LinearProgressIndicator
+                android:id="@+id/transferProgress"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                app:indicatorColor="@color/primary"
+                app:trackColor="@color/primary_container"
+                app:trackThickness="4dp" />
+        </LinearLayout>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnCancelTransfer"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Cancel"
+            android:textColor="@color/status_disconnected" />
+    </LinearLayout>
+
+    <LinearLayout
         android:id="@+id/composeBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -96,10 +140,20 @@
         android:orientation="horizontal"
         android:padding="12dp">
 
+        <ImageButton
+            android:id="@+id/btnAttach"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Send photo"
+            android:src="@drawable/ic_image"
+            app:tint="@color/text_secondary" />
+
         <EditText
             android:id="@+id/etMessage"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
+            android:layout_marginStart="4dp"
             android:layout_weight="1"
             android:background="@drawable/bg_input"
             android:hint="Type a message"
