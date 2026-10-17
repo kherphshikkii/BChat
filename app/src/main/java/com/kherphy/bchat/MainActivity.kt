@@ -14,11 +14,13 @@ import android.text.Editable
 import android.text.InputFilter
 import android.text.TextWatcher
 import android.view.View
+import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
@@ -36,6 +38,7 @@ class MainActivity : AppCompatActivity() {
     private val adapter = MessageAdapter(
         onImageClick = { path -> ImageViewerActivity.open(this, path) },
         onLongClick = { message -> showActions(message) },
+        onQuoteClick = { id -> scrollToMessage(id) },
         nameProvider = { ChatConnection.remoteName.ifBlank { "They" } }
     )
 
@@ -43,6 +46,8 @@ class MainActivity : AppCompatActivity() {
     private val stopTyping = Runnable { setTypingOff() }
     private var typingSent = false
     private var lastTypingSent = 0L
+
+    private var replyTarget: Message? = null
 
     private var preparing = false
     private var activeTransfer: ChatConnection.ImageTransfer? = null
@@ -71,15 +76,18 @@ class MainActivity : AppCompatActivity() {
 
         override fun onMessageChanged(message: Message) {
             adapter.replace(message)
+            if (replyTarget?.id == message.id && message.deleted) clearReply()
         }
 
         override fun onMessageRemoved(id: String) {
             adapter.remove(id)
+            if (replyTarget?.id == id) clearReply()
         }
 
         override fun onHistoryReloaded() {
             adapter.setAll(ChatConnection.history)
             scrollToBottom()
+            clearReply()
         }
 
         override fun onRemoteNameChanged(name: String) {
@@ -159,6 +167,7 @@ class MainActivity : AppCompatActivity() {
         ChatConnection.addListener(connectionListener)
         render(ChatConnection.state)
         renderTransfer()
+        renderReply()
     }
 
     override fun onStop() {
@@ -179,6 +188,8 @@ class MainActivity : AppCompatActivity() {
         binding.btnBack.setOnClickListener { leaveChat() }
 
         binding.btnSend.setOnClickListener { sendMessage() }
+
+        binding.btnCancelReply.setOnClickListener { clearReply() }
 
         binding.btnAttach.setOnClickListener {
             if (ChatConnection.state != ChatConnection.State.CONNECTED) {
@@ -248,6 +259,49 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun previewOf(message: Message): String =
+        if (message.imagePath != null) "📷 Photo" else message.text.take(100)
+
+    private fun startReply(message: Message) {
+        replyTarget = message
+        renderReply()
+        binding.etMessage.post {
+            binding.etMessage.requestFocus()
+            getSystemService(InputMethodManager::class.java)
+                ?.showSoftInput(binding.etMessage, InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
+
+    private fun clearReply() {
+        replyTarget = null
+        renderReply()
+    }
+
+    private fun renderReply() {
+        val target = replyTarget
+        if (target == null) {
+            binding.replyBar.visibility = View.GONE
+            return
+        }
+        val who = if (target.type == MessageType.SENT) {
+            "yourself"
+        } else {
+            ChatConnection.remoteName.ifBlank { "them" }
+        }
+        binding.tvReplyName.text = "Replying to $who"
+        binding.tvReplyText.text = previewOf(target)
+        binding.replyBar.visibility = View.VISIBLE
+    }
+
+    private fun scrollToMessage(id: String) {
+        val position = adapter.positionOf(id)
+        if (position < 0) {
+            toast("The original message isn't available")
+            return
+        }
+        binding.rvMessages.smoothScrollToPosition(position)
+    }
+
     private fun sendMessage() {
         val text = binding.etMessage.text.toString().trim()
         if (text.isEmpty()) return
@@ -258,11 +312,17 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        val target = replyTarget
+        val reply = target?.let {
+            ChatConnection.ReplyRef(it.id, previewOf(it), it.type == MessageType.SENT)
+        }
+
         binding.btnSend.isEnabled = false
-        ChatConnection.send(text) { ok ->
+        ChatConnection.send(text, reply) { ok ->
             binding.btnSend.isEnabled = true
             if (ok) {
                 binding.etMessage.text.clear()
+                clearReply()
             } else {
                 toast("Message not sent. Please try again.")
             }
@@ -272,48 +332,76 @@ class MainActivity : AppCompatActivity() {
     private fun showActions(message: Message) {
         val options = mutableListOf<String>()
         if (message.text.isNotEmpty() && !message.deleted) options.add(ACTION_COPY)
-        if (message.pending) {
-            options.add(ACTION_CANCEL)
-        } else {
-            options.add(ACTION_REMOVE)
-            val canUnsend = message.type == MessageType.SENT &&
-                    !message.deleted &&
-                    ChatConnection.state == ChatConnection.State.CONNECTED
-            if (canUnsend) options.add(ACTION_UNSEND)
-        }
+        if (!message.deleted) options.add(ACTION_REPLY)
+        options.add(if (message.pending) ACTION_CANCEL else ACTION_DELETE)
 
         MaterialAlertDialogBuilder(this)
             .setItems(options.toTypedArray()) { _, which ->
                 when (options[which]) {
                     ACTION_COPY -> copyText(message.text)
+                    ACTION_REPLY -> startReply(message)
                     ACTION_CANCEL -> ChatConnection.deleteForMe(message.id)
-                    ACTION_REMOVE -> confirmRemove(message)
-                    else -> confirmUnsend(message)
+                    else -> showDeleteDialog(message)
                 }
             }
             .show()
     }
 
-    private fun confirmRemove(message: Message) {
-        val name = ChatConnection.remoteName.ifBlank { "The other person" }
-        confirm(
-            "Remove for you?",
-            "This is removed from your phone only. $name can still see it.",
-            "Remove"
-        ) {
-            ChatConnection.deleteForMe(message.id)
+    private fun showDeleteDialog(message: Message) {
+        val canUnsend = message.type == MessageType.SENT &&
+                !message.deleted &&
+                !message.pending
+        if (!canUnsend) {
+            confirmRemove(message)
+            return
         }
+
+        val name = ChatConnection.remoteName.ifBlank { "The other person" }
+        val connected = ChatConnection.state == ChatConnection.State.CONNECTED
+        val unsendText = if (connected) {
+            "Unsend for everyone\nThis message will be unsent for everyone in this chat."
+        } else {
+            "Unsend for everyone\nYou're offline. It will be unsent for everyone when you reconnect."
+        }
+        val choices = arrayOf(
+            unsendText,
+            "Remove for you\nThis message is removed from your phone only. $name can still see it."
+        )
+        var selected = -1
+
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle("Delete message?")
+            .setSingleChoiceItems(choices, -1) { shown, which ->
+                selected = which
+                (shown as AlertDialog).getButton(DialogInterface.BUTTON_POSITIVE).isEnabled = true
+            }
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Delete") { _, _ ->
+                when (selected) {
+                    0 -> ChatConnection.unsend(message.id) { ok ->
+                        if (!ok) {
+                            toast("Couldn't unsend. Turn on Save chat history in Settings, or reconnect and try again.")
+                        }
+                    }
+                    1 -> ChatConnection.deleteForMe(message.id)
+                }
+            }
+            .show()
+
+        val delete = dialog.getButton(DialogInterface.BUTTON_POSITIVE)
+        delete.isEnabled = false
+        delete.setTextColor(ContextCompat.getColor(this, R.color.status_disconnected))
     }
 
-    private fun confirmUnsend(message: Message) {
-        confirm(
-            "Unsend message?",
-            "This removes the message for everyone in this chat.",
-            "Unsend"
-        ) {
-            ChatConnection.unsend(message.id) { ok ->
-                if (!ok) toast("Couldn't unsend. Check the connection and try again.")
-            }
+    private fun confirmRemove(message: Message) {
+        val name = ChatConnection.remoteName.ifBlank { "The other person" }
+        val text = if (message.type == MessageType.SENT && !message.deleted) {
+            "This is removed from your phone only. $name can still see it."
+        } else {
+            "This is removed from your phone only."
+        }
+        confirm("Remove for you?", text, "Remove") {
+            ChatConnection.deleteForMe(message.id)
         }
     }
 
@@ -466,8 +554,8 @@ class MainActivity : AppCompatActivity() {
         private const val TYPING_REFRESH_MS = 3_000L
         private const val TYPING_STOP_MS = 4_000L
         private const val ACTION_COPY = "Copy"
-        private const val ACTION_REMOVE = "Remove for you"
+        private const val ACTION_REPLY = "Reply"
         private const val ACTION_CANCEL = "Cancel sending"
-        private const val ACTION_UNSEND = "Unsend for everyone"
+        private const val ACTION_DELETE = "Delete"
     }
 }

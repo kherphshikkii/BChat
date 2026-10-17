@@ -66,7 +66,13 @@ object ChatStore {
                 .put("sent", message.type == MessageType.SENT)
                 .put("deleted", message.deleted)
                 .put("pending", message.pending)
+                .put("unsendPending", message.unsendPending)
             message.imagePath?.let { path -> item.put("image", File(path).name) }
+            message.replyToId?.let { replyId ->
+                item.put("replyId", replyId)
+                    .put("replyText", message.replyText)
+                    .put("replyMine", message.replyMine)
+            }
             array.put(item)
         }
         data.put(address, JSONObject().put("name", name).put("messages", array))
@@ -83,9 +89,12 @@ object ChatStore {
             val time = item.getLong("time")
             val id = item.optString("id", "").ifEmpty { UUID.randomUUID().toString() }
             val imageName = item.optString("image", "")
+            val replyId = item.optString("replyId", "").ifEmpty { null }
             when {
                 item.optBoolean("deleted") ->
-                    result.add(Message("", time, type, null, id, true))
+                    result.add(
+                        Message("", time, type, null, id, true, false, item.optBoolean("unsendPending"))
+                    )
                 imageName.isNotEmpty() -> {
                     val image = File(imageDir(), imageName)
                     if (image.exists()) {
@@ -100,7 +109,11 @@ object ChatStore {
                         null,
                         id,
                         false,
-                        item.optBoolean("pending")
+                        item.optBoolean("pending"),
+                        false,
+                        replyId,
+                        item.optString("replyText", ""),
+                        item.optBoolean("replyMine")
                     )
                 )
             }
@@ -116,7 +129,9 @@ object ChatStore {
             val array = data.optJSONObject(address)?.optJSONArray("messages") ?: continue
             for (i in 0 until array.length()) {
                 val item = array.optJSONObject(i) ?: continue
-                if (item.optBoolean("pending") && !item.optBoolean("deleted")) {
+                val waitingText = item.optBoolean("pending") && !item.optBoolean("deleted")
+                val waitingUnsend = item.optBoolean("deleted") && item.optBoolean("unsendPending")
+                if (waitingText || waitingUnsend) {
                     result.add(address)
                     break
                 }
@@ -135,7 +150,11 @@ object ChatStore {
             if (array.length() == 0) continue
             val last = array.getJSONObject(array.length() - 1)
             val lastText = when {
-                last.optBoolean("deleted") -> "Message unsent"
+                last.optBoolean("deleted") -> if (last.optBoolean("sent")) {
+                    "You unsent a message"
+                } else {
+                    "${entry.optString("name", address)} unsent a message"
+                }
                 last.optString("image", "").isNotEmpty() -> "📷 Photo"
                 else -> last.getString("text")
             }

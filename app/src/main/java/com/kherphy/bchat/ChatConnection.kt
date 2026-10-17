@@ -38,11 +38,13 @@ object ChatConnection {
     private const val TYPE_UNSEND: Byte = 7
     private const val TYPE_TYPING: Byte = 8
     private const val TYPE_ACK: Byte = 9
+    private const val TYPE_REPLY: Byte = 10
 
     private const val CHUNK_SIZE = 8192
     private const val MAX_CHUNK_SIZE = 65536
     private const val MAX_IMAGE_BYTES = 3_000_000
     private const val MAX_ID_LENGTH = 64
+    private const val MAX_REPLY_LENGTH = 120
     private const val REQUEST_TIMEOUT_MS = 30_000L
     private const val TYPING_TIMEOUT_MS = 6_000L
     private const val AUTO_RETRY_MIN_MS = 45_000L
@@ -73,6 +75,8 @@ object ChatConnection {
             cancelled = true
         }
     }
+
+    class ReplyRef(val id: String, val text: String, val mine: Boolean)
 
     interface Listener {
         fun onStateChanged(state: State) {}
@@ -213,17 +217,24 @@ object ChatConnection {
         scheduleAutoRetry()
     }
 
-    fun send(text: String, onResult: (Boolean) -> Unit) {
+    fun send(text: String, reply: ReplyRef?, onResult: (Boolean) -> Unit) {
         if (remoteAddress.isBlank()) {
             onResult(false)
             return
         }
         val id = UUID.randomUUID().toString()
+        val replyId = reply?.id
+        val replyText = reply?.text.orEmpty().take(MAX_REPLY_LENGTH)
+        val replyMine = reply?.mine ?: false
         val thread = connectedThread
 
         if (state == State.CONNECTED && thread != null) {
             sendExecutor.execute {
-                val ok = thread.writeText(id, text)
+                val ok = if (replyId == null) {
+                    thread.writeText(id, text)
+                } else {
+                    thread.writeReply(id, text, replyId, replyText, replyMine)
+                }
                 handler.post {
                     addToHistory(
                         Message(
@@ -233,7 +244,11 @@ object ChatConnection {
                             null,
                             id,
                             false,
-                            !ok
+                            !ok,
+                            false,
+                            replyId,
+                            replyText,
+                            replyMine
                         )
                     )
                     onResult(true)
@@ -247,7 +262,19 @@ object ChatConnection {
             return
         }
         addToHistory(
-            Message(text, System.currentTimeMillis(), MessageType.SENT, null, id, false, true)
+            Message(
+                text,
+                System.currentTimeMillis(),
+                MessageType.SENT,
+                null,
+                id,
+                false,
+                true,
+                false,
+                replyId,
+                replyText,
+                replyMine
+            )
         )
         resetAutoAttempts()
         onResult(true)
@@ -303,25 +330,29 @@ object ChatConnection {
     }
 
     fun unsend(id: String, onResult: (Boolean) -> Unit) {
-        val thread = connectedThread
         val target = messages.firstOrNull { it.id == id }
-        val allowed = state == State.CONNECTED &&
-                thread != null &&
-                target != null &&
-                target.type == MessageType.SENT &&
-                !target.deleted &&
-                !target.pending
-        if (!allowed || thread == null) {
+        if (target == null || target.type != MessageType.SENT || target.deleted || target.pending) {
             onResult(false)
             return
         }
-        sendExecutor.execute {
-            val ok = thread.writeUnsend(id)
-            handler.post {
-                if (ok) markDeleted(id)
-                onResult(ok)
+        val thread = connectedThread
+        if (state == State.CONNECTED && thread != null) {
+            sendExecutor.execute {
+                val ok = thread.writeUnsend(id)
+                handler.post {
+                    if (ok) markDeleted(id, false)
+                    onResult(ok)
+                }
             }
+            return
         }
+        if (!Prefs.isSaveHistory(ctx()) || historyAddress.isBlank()) {
+            onResult(false)
+            return
+        }
+        markDeleted(id, true)
+        resetAutoAttempts()
+        onResult(true)
     }
 
     fun openSavedChat(address: String, name: String) {
@@ -392,10 +423,34 @@ object ChatConnection {
         val waiting = messages.filter {
             it.type == MessageType.SENT && it.pending && !it.deleted && it.imagePath == null
         }
-        if (waiting.isEmpty()) return
+        val unsends = messages
+            .filter { it.type == MessageType.SENT && it.deleted && it.unsendPending }
+            .map { it.id }
+        if (waiting.isEmpty() && unsends.isEmpty()) return
         sendExecutor.execute {
-            waiting.forEach { thread.writeText(it.id, it.text) }
+            waiting.forEach { m ->
+                val replyId = m.replyToId
+                if (replyId == null) {
+                    thread.writeText(m.id, m.text)
+                } else {
+                    thread.writeReply(m.id, m.text, replyId, m.replyText, m.replyMine)
+                }
+            }
+            val done = unsends.filter { thread.writeUnsend(it) }
+            if (done.isNotEmpty()) handler.post { clearUnsendPending(done) }
         }
+    }
+
+    private fun clearUnsendPending(ids: List<String>) {
+        var changed = false
+        ids.forEach { id ->
+            val index = messages.indexOfFirst { it.id == id }
+            if (index >= 0 && messages[index].unsendPending) {
+                messages[index] = messages[index].copy(unsendPending = false)
+                changed = true
+            }
+        }
+        if (changed) persist()
     }
 
     private fun setState(newState: State) {
@@ -421,15 +476,34 @@ object ChatConnection {
         listeners.forEach { it.onMessageAdded(message) }
     }
 
-    private fun markDeleted(id: String) {
+    private fun markDeleted(id: String, queueUnsend: Boolean = false) {
         val index = messages.indexOfFirst { it.id == id }
         if (index < 0) return
         val old = messages[index]
         old.imagePath?.let { File(it).delete() }
-        val updated = old.copy(text = "", imagePath = null, deleted = true, pending = false)
+        val updated = old.copy(
+            text = "",
+            imagePath = null,
+            deleted = true,
+            pending = false,
+            unsendPending = queueUnsend,
+            replyToId = null,
+            replyText = "",
+            replyMine = false
+        )
         messages[index] = updated
+
+        val changed = mutableListOf(updated)
+        for (i in messages.indices) {
+            val m = messages[i]
+            if (m.replyToId == id && m.replyText.isNotEmpty()) {
+                val scrubbed = m.copy(replyText = "")
+                messages[i] = scrubbed
+                changed.add(scrubbed)
+            }
+        }
         persist()
-        listeners.forEach { it.onMessageChanged(updated) }
+        changed.forEach { c -> listeners.forEach { it.onMessageChanged(c) } }
     }
 
     private fun addNotice(label: String) {
@@ -563,14 +637,33 @@ object ChatConnection {
         listeners.forEach { it.onRemoteNameChanged(name) }
     }
 
-    private fun textReceived(thread: ConnectedThread, id: String, text: String) {
+    private fun textReceived(
+        thread: ConnectedThread,
+        id: String,
+        text: String,
+        replyId: String? = null,
+        replyText: String = "",
+        replyMine: Boolean = false
+    ) {
         if (thread !== connectedThread) return
         val cleanId = id.take(MAX_ID_LENGTH)
         sendExecutor.execute { thread.writeAck(cleanId) }
         if (messages.any { it.id == cleanId }) return
         setRemoteTyping(false)
         addToHistory(
-            Message(text, System.currentTimeMillis(), MessageType.RECEIVED, null, cleanId)
+            Message(
+                text,
+                System.currentTimeMillis(),
+                MessageType.RECEIVED,
+                null,
+                cleanId,
+                false,
+                false,
+                false,
+                replyId?.take(MAX_ID_LENGTH),
+                replyText.take(MAX_REPLY_LENGTH),
+                replyMine
+            )
         )
     }
 
@@ -717,6 +810,23 @@ object ChatConnection {
                             val text = input.readUTF()
                             handler.post { textReceived(this@ConnectedThread, id, text) }
                         }
+                        TYPE_REPLY -> {
+                            val id = input.readUTF()
+                            val text = input.readUTF()
+                            val replyId = input.readUTF()
+                            val replyText = input.readUTF()
+                            val senderOwnsOriginal = input.readBoolean()
+                            handler.post {
+                                textReceived(
+                                    this@ConnectedThread,
+                                    id,
+                                    text,
+                                    replyId,
+                                    replyText,
+                                    !senderOwnsOriginal
+                                )
+                            }
+                        }
                         TYPE_ACK -> {
                             val id = input.readUTF()
                             handler.post { ackReceived(this@ConnectedThread, id) }
@@ -841,6 +951,27 @@ object ChatConnection {
                 output.writeByte(TYPE_MESSAGE.toInt())
                 output.writeUTF(id)
                 output.writeUTF(text)
+                output.flush()
+            }
+            true
+        } catch (e: IOException) {
+            false
+        }
+
+        fun writeReply(
+            id: String,
+            text: String,
+            replyId: String,
+            replyText: String,
+            replyMine: Boolean
+        ): Boolean = try {
+            synchronized(output) {
+                output.writeByte(TYPE_REPLY.toInt())
+                output.writeUTF(id)
+                output.writeUTF(text)
+                output.writeUTF(replyId)
+                output.writeUTF(replyText)
+                output.writeBoolean(replyMine)
                 output.flush()
             }
             true
