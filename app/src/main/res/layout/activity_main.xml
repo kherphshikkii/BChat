@@ -212,7 +212,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="Messages can't send until you reconnect."
+            android:text="Messages you send now will be delivered when you reconnect."
             android:textColor="@color/status_disconnected"
             android:textSize="14sp" />
 

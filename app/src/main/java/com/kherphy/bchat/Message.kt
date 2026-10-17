@@ -14,5 +14,6 @@ data class Message(
     val type: MessageType,
     val imagePath: String? = null,
     val id: String = UUID.randomUUID().toString(),
-    val deleted: Boolean = false
+    val deleted: Boolean = false,
+    val pending: Boolean = false
 )

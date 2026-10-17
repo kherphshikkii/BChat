@@ -65,6 +65,7 @@ object ChatStore {
                 .put("time", message.timestamp)
                 .put("sent", message.type == MessageType.SENT)
                 .put("deleted", message.deleted)
+                .put("pending", message.pending)
             message.imagePath?.let { path -> item.put("image", File(path).name) }
             array.put(item)
         }
@@ -91,7 +92,34 @@ object ChatStore {
                         result.add(Message("", time, type, image.absolutePath, id))
                     }
                 }
-                else -> result.add(Message(item.getString("text"), time, type, null, id))
+                else -> result.add(
+                    Message(
+                        item.getString("text"),
+                        time,
+                        type,
+                        null,
+                        id,
+                        false,
+                        item.optBoolean("pending")
+                    )
+                )
+            }
+        }
+        return result
+    }
+
+    fun pendingAddresses(): List<String> {
+        val result = mutableListOf<String>()
+        val keys = data.keys()
+        while (keys.hasNext()) {
+            val address = keys.next()
+            val array = data.optJSONObject(address)?.optJSONArray("messages") ?: continue
+            for (i in 0 until array.length()) {
+                val item = array.optJSONObject(i) ?: continue
+                if (item.optBoolean("pending") && !item.optBoolean("deleted")) {
+                    result.add(address)
+                    break
+                }
             }
         }
         return result

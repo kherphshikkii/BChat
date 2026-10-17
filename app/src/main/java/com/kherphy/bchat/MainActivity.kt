@@ -182,7 +182,7 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnAttach.setOnClickListener {
             if (ChatConnection.state != ChatConnection.State.CONNECTED) {
-                toast("Not connected. Tap Reconnect.")
+                toast("Photos need a connection. Tap Reconnect first.")
             } else {
                 pickImage.launch(
                     PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
@@ -200,6 +200,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.btnReconnect.setOnClickListener {
+            ChatConnection.resetAutoAttempts()
             ChatConnection.connect(ChatConnection.remoteAddress)
         }
     }
@@ -251,8 +252,9 @@ class MainActivity : AppCompatActivity() {
         val text = binding.etMessage.text.toString().trim()
         if (text.isEmpty()) return
 
-        if (ChatConnection.state != ChatConnection.State.CONNECTED) {
-            toast("Not connected. Tap Reconnect.")
+        val connected = ChatConnection.state == ChatConnection.State.CONNECTED
+        if (!connected && !Prefs.isSaveHistory(this)) {
+            toast("Turn on Save chat history in Settings to send messages while disconnected.")
             return
         }
 
@@ -262,7 +264,7 @@ class MainActivity : AppCompatActivity() {
             if (ok) {
                 binding.etMessage.text.clear()
             } else {
-                toast("Message not sent. Check the connection and try again.")
+                toast("Message not sent. Please try again.")
             }
         }
     }
@@ -270,16 +272,21 @@ class MainActivity : AppCompatActivity() {
     private fun showActions(message: Message) {
         val options = mutableListOf<String>()
         if (message.text.isNotEmpty() && !message.deleted) options.add(ACTION_COPY)
-        options.add(ACTION_REMOVE)
-        val canUnsend = message.type == MessageType.SENT &&
-                !message.deleted &&
-                ChatConnection.state == ChatConnection.State.CONNECTED
-        if (canUnsend) options.add(ACTION_UNSEND)
+        if (message.pending) {
+            options.add(ACTION_CANCEL)
+        } else {
+            options.add(ACTION_REMOVE)
+            val canUnsend = message.type == MessageType.SENT &&
+                    !message.deleted &&
+                    ChatConnection.state == ChatConnection.State.CONNECTED
+            if (canUnsend) options.add(ACTION_UNSEND)
+        }
 
         MaterialAlertDialogBuilder(this)
             .setItems(options.toTypedArray()) { _, which ->
                 when (options[which]) {
                     ACTION_COPY -> copyText(message.text)
+                    ACTION_CANCEL -> ChatConnection.deleteForMe(message.id)
                     ACTION_REMOVE -> confirmRemove(message)
                     else -> confirmUnsend(message)
                 }
@@ -329,7 +336,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun sendPhoto(uri: Uri) {
         if (ChatConnection.state != ChatConnection.State.CONNECTED) {
-            toast("Not connected. Tap Reconnect.")
+            toast("Photos need a connection. Tap Reconnect first.")
             return
         }
         if (preparing || activeTransfer != null) return
@@ -412,19 +419,18 @@ class MainActivity : AppCompatActivity() {
 
     private fun render(state: ChatConnection.State) {
         binding.tvDeviceName.text = ChatConnection.remoteName.ifBlank { "Unknown device" }
+        binding.composeBar.visibility = View.VISIBLE
 
         when (state) {
             ChatConnection.State.CONNECTED -> {
                 showStatus("Connected", R.color.status_connected)
                 binding.btnDisconnect.visibility = View.VISIBLE
-                binding.composeBar.visibility = View.VISIBLE
                 binding.disconnectedBanner.visibility = View.GONE
             }
 
             ChatConnection.State.CONNECTING -> {
                 showStatus("Connecting…", R.color.warning_text)
                 binding.btnDisconnect.visibility = View.GONE
-                binding.composeBar.visibility = View.GONE
                 binding.disconnectedBanner.visibility = View.VISIBLE
                 binding.btnReconnect.isEnabled = false
                 binding.btnReconnect.text = "Connecting…"
@@ -435,7 +441,6 @@ class MainActivity : AppCompatActivity() {
             else -> {
                 showStatus("Disconnected", R.color.status_disconnected)
                 binding.btnDisconnect.visibility = View.GONE
-                binding.composeBar.visibility = View.GONE
                 binding.disconnectedBanner.visibility = View.VISIBLE
                 binding.btnReconnect.isEnabled = true
                 binding.btnReconnect.text = "Reconnect"
@@ -462,6 +467,7 @@ class MainActivity : AppCompatActivity() {
         private const val TYPING_STOP_MS = 4_000L
         private const val ACTION_COPY = "Copy"
         private const val ACTION_REMOVE = "Remove for you"
+        private const val ACTION_CANCEL = "Cancel sending"
         private const val ACTION_UNSEND = "Unsend for everyone"
     }
 }

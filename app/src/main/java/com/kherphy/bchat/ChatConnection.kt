@@ -37,6 +37,7 @@ object ChatConnection {
     private const val TYPE_IMAGE_CANCEL: Byte = 6
     private const val TYPE_UNSEND: Byte = 7
     private const val TYPE_TYPING: Byte = 8
+    private const val TYPE_ACK: Byte = 9
 
     private const val CHUNK_SIZE = 8192
     private const val MAX_CHUNK_SIZE = 65536
@@ -44,6 +45,9 @@ object ChatConnection {
     private const val MAX_ID_LENGTH = 64
     private const val REQUEST_TIMEOUT_MS = 30_000L
     private const val TYPING_TIMEOUT_MS = 6_000L
+    private const val AUTO_RETRY_MIN_MS = 45_000L
+    private const val AUTO_RETRY_MAX_MS = 75_000L
+    private const val AUTO_MAX_ATTEMPTS = 40
 
     const val MAX_MESSAGE_LENGTH = 1000
 
@@ -111,12 +115,18 @@ object ChatConnection {
     private val pendingTimeout = Runnable { rejectPending() }
     private val typingExpire = Runnable { setRemoteTyping(false) }
 
+    private var silentConnect = false
+    private var autoAttempts = 0
+    private var autoIndex = 0
+    private val autoRetry = Runnable { autoRetryTick() }
+
     fun init(context: Context) {
         appContext = context.applicationContext
         ChatStore.init(context)
         if (adapter == null) {
             adapter = context.applicationContext
                 .getSystemService(BluetoothManager::class.java)?.adapter
+            scheduleAutoRetry()
         }
     }
 
@@ -155,6 +165,10 @@ object ChatConnection {
     }
 
     fun connect(address: String) {
+        startConnect(address, false)
+    }
+
+    private fun startConnect(address: String, silent: Boolean) {
         if (state == State.CONNECTING || state == State.CONNECTED) return
         rejectPending()
 
@@ -164,15 +178,18 @@ object ChatConnection {
             null
         }
         if (device == null) {
-            notifyFailed("Couldn't find that device")
+            if (!silent) notifyFailed("Couldn't find that device")
             return
         }
 
         acceptThread?.cancel()
         acceptThread = null
 
-        remoteAddress = address
-        remoteName = device.name ?: address
+        silentConnect = silent
+        if (!silent) {
+            remoteAddress = address
+            remoteName = device.name ?: address
+        }
 
         val thread = ConnectThread(device)
         connectThread = thread
@@ -183,6 +200,7 @@ object ChatConnection {
     fun disconnect() {
         val wasConnected = state == State.CONNECTED
 
+        silentConnect = false
         connectThread?.cancel()
         connectThread = null
         connectedThread?.cancel()
@@ -192,26 +210,47 @@ object ChatConnection {
         if (wasConnected) addNotice("You disconnected")
         setState(State.IDLE)
         startListening()
+        scheduleAutoRetry()
     }
 
     fun send(text: String, onResult: (Boolean) -> Unit) {
-        val thread = connectedThread
-        if (state != State.CONNECTED || thread == null) {
+        if (remoteAddress.isBlank()) {
             onResult(false)
             return
         }
         val id = UUID.randomUUID().toString()
-        sendExecutor.execute {
-            val ok = thread.writeText(id, text)
-            handler.post {
-                if (ok) {
+        val thread = connectedThread
+
+        if (state == State.CONNECTED && thread != null) {
+            sendExecutor.execute {
+                val ok = thread.writeText(id, text)
+                handler.post {
                     addToHistory(
-                        Message(text, System.currentTimeMillis(), MessageType.SENT, null, id)
+                        Message(
+                            text,
+                            System.currentTimeMillis(),
+                            MessageType.SENT,
+                            null,
+                            id,
+                            false,
+                            !ok
+                        )
                     )
+                    onResult(true)
                 }
-                onResult(ok)
             }
+            return
         }
+
+        if (!Prefs.isSaveHistory(ctx())) {
+            onResult(false)
+            return
+        }
+        addToHistory(
+            Message(text, System.currentTimeMillis(), MessageType.SENT, null, id, false, true)
+        )
+        resetAutoAttempts()
+        onResult(true)
     }
 
     fun sendImage(
@@ -270,7 +309,8 @@ object ChatConnection {
                 thread != null &&
                 target != null &&
                 target.type == MessageType.SENT &&
-                !target.deleted
+                !target.deleted &&
+                !target.pending
         if (!allowed || thread == null) {
             onResult(false)
             return
@@ -295,6 +335,12 @@ object ChatConnection {
         ChatStore.clearAll()
         messages.clear()
         historyAddress = ""
+        handler.removeCallbacks(autoRetry)
+    }
+
+    fun resetAutoAttempts() {
+        autoAttempts = 0
+        scheduleAutoRetry()
     }
 
     fun acceptPending() {
@@ -312,6 +358,44 @@ object ChatConnection {
         RequestDialog.dismiss()
         closeQuietly(socket)
         startListening()
+    }
+
+    private fun scheduleAutoRetry() {
+        handler.removeCallbacks(autoRetry)
+        if (appContext == null) return
+        if (ChatStore.pendingAddresses().isEmpty()) return
+        handler.postDelayed(autoRetry, (AUTO_RETRY_MIN_MS..AUTO_RETRY_MAX_MS).random())
+    }
+
+    private fun autoRetryTick() {
+        val addresses = ChatStore.pendingAddresses()
+        if (addresses.isEmpty() || autoAttempts >= AUTO_MAX_ATTEMPTS) return
+
+        val bluetooth = adapter
+        val ready = bluetooth != null &&
+                bluetooth.isEnabled &&
+                !bluetooth.isDiscovering &&
+                BtPermissions.hasAll(ctx()) &&
+                pendingSocket == null &&
+                state != State.CONNECTED &&
+                state != State.CONNECTING
+
+        if (ready) {
+            autoAttempts++
+            autoIndex++
+            startConnect(addresses[autoIndex % addresses.size], true)
+        }
+        scheduleAutoRetry()
+    }
+
+    private fun flushPending(thread: ConnectedThread) {
+        val waiting = messages.filter {
+            it.type == MessageType.SENT && it.pending && !it.deleted && it.imagePath == null
+        }
+        if (waiting.isEmpty()) return
+        sendExecutor.execute {
+            waiting.forEach { thread.writeText(it.id, it.text) }
+        }
     }
 
     private fun setState(newState: State) {
@@ -342,7 +426,7 @@ object ChatConnection {
         if (index < 0) return
         val old = messages[index]
         old.imagePath?.let { File(it).delete() }
-        val updated = old.copy(text = "", imagePath = null, deleted = true)
+        val updated = old.copy(text = "", imagePath = null, deleted = true, pending = false)
         messages[index] = updated
         persist()
         listeners.forEach { it.onMessageChanged(updated) }
@@ -426,17 +510,24 @@ object ChatConnection {
     private fun connectFailed(thread: ConnectThread) {
         if (thread !== connectThread || thread.cancelled) return
         connectThread = null
+        val quiet = silentConnect
+        silentConnect = false
         setState(State.IDLE)
-        notifyFailed(
-            "Couldn't connect. Check that the other phone has BChat open, then try again."
-        )
+        if (!quiet) {
+            notifyFailed(
+                "Couldn't connect. Check that the other phone has BChat open, then try again."
+            )
+        }
         startListening()
+        scheduleAutoRetry()
     }
 
     private fun onConnected(socket: BluetoothSocket) {
         val device = socket.remoteDevice
         remoteAddress = device.address
         remoteName = device.name ?: device.address
+        silentConnect = false
+        autoAttempts = 0
         setRemoteTyping(false)
 
         if (remoteAddress != historyAddress) loadHistory(remoteAddress)
@@ -450,6 +541,7 @@ object ChatConnection {
 
         val myName = Prefs.getName(ctx())
         sendExecutor.execute { thread.writeHello(myName) }
+        flushPending(thread)
     }
 
     private fun connectionLost(thread: ConnectedThread) {
@@ -459,6 +551,7 @@ object ChatConnection {
         addNotice("Connection lost")
         setState(State.IDLE)
         startListening()
+        scheduleAutoRetry()
     }
 
     private fun helloReceived(thread: ConnectedThread, text: String) {
@@ -472,16 +565,25 @@ object ChatConnection {
 
     private fun textReceived(thread: ConnectedThread, id: String, text: String) {
         if (thread !== connectedThread) return
+        val cleanId = id.take(MAX_ID_LENGTH)
+        sendExecutor.execute { thread.writeAck(cleanId) }
+        if (messages.any { it.id == cleanId }) return
         setRemoteTyping(false)
         addToHistory(
-            Message(
-                text,
-                System.currentTimeMillis(),
-                MessageType.RECEIVED,
-                null,
-                id.take(MAX_ID_LENGTH)
-            )
+            Message(text, System.currentTimeMillis(), MessageType.RECEIVED, null, cleanId)
         )
+    }
+
+    private fun ackReceived(thread: ConnectedThread, id: String) {
+        if (thread !== connectedThread) return
+        val index = messages.indexOfFirst { it.id == id.take(MAX_ID_LENGTH) }
+        if (index < 0) return
+        val old = messages[index]
+        if (old.type != MessageType.SENT || !old.pending) return
+        val updated = old.copy(pending = false)
+        messages[index] = updated
+        persist()
+        listeners.forEach { it.onMessageChanged(updated) }
     }
 
     private fun unsendReceived(thread: ConnectedThread, id: String) {
@@ -615,6 +717,10 @@ object ChatConnection {
                             val text = input.readUTF()
                             handler.post { textReceived(this@ConnectedThread, id, text) }
                         }
+                        TYPE_ACK -> {
+                            val id = input.readUTF()
+                            handler.post { ackReceived(this@ConnectedThread, id) }
+                        }
                         TYPE_IMAGE_START -> startIncoming(input.readInt(), input.readUTF())
                         TYPE_IMAGE_CHUNK -> readChunk()
                         TYPE_IMAGE_END -> finishIncoming()
@@ -735,6 +841,17 @@ object ChatConnection {
                 output.writeByte(TYPE_MESSAGE.toInt())
                 output.writeUTF(id)
                 output.writeUTF(text)
+                output.flush()
+            }
+            true
+        } catch (e: IOException) {
+            false
+        }
+
+        fun writeAck(id: String): Boolean = try {
+            synchronized(output) {
+                output.writeByte(TYPE_ACK.toInt())
+                output.writeUTF(id)
                 output.flush()
             }
             true

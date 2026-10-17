@@ -90,7 +90,8 @@ class MessageAdapter(
         when (holder) {
             is SentHolder -> {
                 holder.binding.tvMessage.text = message.text
-                holder.binding.tvTime.text = time
+                holder.binding.tvTime.text =
+                    if (message.pending) "Waiting to send · $time" else time
                 holder.binding.tvMessage.setOnLongClickListener {
                     onLongClick(message)
                     true

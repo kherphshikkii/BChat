@@ -29,6 +29,18 @@ class ChatService : Service() {
         override fun onRemoteNameChanged(name: String) {
             refreshNotification()
         }
+
+        override fun onMessageAdded(message: Message) {
+            refreshNotification()
+        }
+
+        override fun onMessageChanged(message: Message) {
+            refreshNotification()
+        }
+
+        override fun onMessageRemoved(id: String) {
+            refreshNotification()
+        }
     }
 
     private val bluetoothReceiver = object : BroadcastReceiver() {
@@ -57,6 +69,7 @@ class ChatService : Service() {
         when (intent?.action) {
             ACTION_DISCONNECT -> ChatConnection.disconnect()
             ACTION_QUIT -> quit()
+            else -> ChatConnection.resetAutoAttempts()
         }
         return START_NOT_STICKY
     }
@@ -112,11 +125,13 @@ class ChatService : Service() {
         val state = ChatConnection.state
         val name = ChatConnection.remoteName.ifBlank { "device" }
         val bluetoothOn = getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled == true
+        val waiting = ChatStore.pendingAddresses().isNotEmpty()
 
         val text = when {
             state == ChatConnection.State.CONNECTED -> "Connected to $name"
-            state == ChatConnection.State.CONNECTING -> "Connecting to $name…"
+            state == ChatConnection.State.CONNECTING -> "Connecting…"
             !bluetoothOn -> "Bluetooth is off"
+            waiting -> "Messages waiting to send"
             state == ChatConnection.State.LISTENING -> "Ready for connections"
             else -> "Not connected"
         }
