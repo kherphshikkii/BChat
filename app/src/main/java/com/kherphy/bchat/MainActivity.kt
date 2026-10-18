@@ -165,6 +165,7 @@ class MainActivity : AppCompatActivity() {
         scrollToBottom()
 
         ChatConnection.addListener(connectionListener)
+        ChatConnection.setChatVisible(true)
         render(ChatConnection.state)
         renderTransfer()
         renderReply()
@@ -173,6 +174,7 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() {
         super.onStop()
         if (!::binding.isInitialized) return
+        ChatConnection.setChatVisible(false)
         setTypingOff()
         ChatConnection.removeListener(connectionListener)
     }

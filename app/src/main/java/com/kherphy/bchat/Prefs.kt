@@ -4,7 +4,20 @@ import android.content.Context
 import android.os.Build
 
 object Prefs {
+    private const val KEY_ALERTS = "message_alerts"
+    private const val KEY_PREVIEW = "message_preview"
 
+    fun isAlerts(context: Context): Boolean = prefs(context).getBoolean(KEY_ALERTS, true)
+
+    fun setAlerts(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean(KEY_ALERTS, value).apply()
+    }
+
+    fun isPreview(context: Context): Boolean = prefs(context).getBoolean(KEY_PREVIEW, true)
+
+    fun setPreview(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean(KEY_PREVIEW, value).apply()
+    }
     private const val FILE = "bchat_prefs"
     private const val KEY_NAME = "username"
     private const val KEY_VISIBLE = "visible"
@@ -48,5 +61,6 @@ object Prefs {
 
     fun setAskedNotifications(context: Context) {
         prefs(context).edit().putBoolean(KEY_ASKED_NOTIF, true).apply()
+
     }
 }

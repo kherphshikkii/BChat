@@ -99,9 +99,12 @@ class HomeActivity : AppCompatActivity() {
         if (Prefs.hasName(this)) {
             askNotificationPermission()
         } else {
-            NameDialog.show(this) { askNotificationPermission() }
+            NameDialog.show(this) { askNotificationPermission()
+            }
         }
+        handleOpenRequest(intent)
     }
+
 
     override fun onStart() {
         super.onStart()
@@ -211,7 +214,28 @@ class HomeActivity : AppCompatActivity() {
         Prefs.setAskedNotifications(this)
         notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleOpenRequest(intent)
+    }
 
+    private fun handleOpenRequest(intent: Intent?) {
+        val address = intent?.getStringExtra(EXTRA_OPEN_ADDRESS) ?: return
+        val name = intent.getStringExtra(EXTRA_OPEN_NAME).orEmpty()
+        intent.removeExtra(EXTRA_OPEN_ADDRESS)
+        intent.removeExtra(EXTRA_OPEN_NAME)
+        val busy = ChatConnection.state == ChatConnection.State.CONNECTED ||
+                ChatConnection.state == ChatConnection.State.CONNECTING
+        if (busy) return
+        ChatConnection.openSavedChat(address, name.ifBlank { address })
+        startActivity(Intent(this, MainActivity::class.java))
+    }
+
+    companion object {
+        const val EXTRA_OPEN_ADDRESS = "open_address"
+        const val EXTRA_OPEN_NAME = "open_name"
+    }
     private fun toast(message: String) {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }

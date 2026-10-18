@@ -10,7 +10,8 @@ data class Conversation(
     val address: String,
     val name: String,
     val lastText: String,
-    val lastTime: Long
+    val lastTime: Long,
+    val unread: Int = 0
 )
 
 object ChatStore {
@@ -75,7 +76,21 @@ object ChatStore {
             }
             array.put(item)
         }
-        data.put(address, JSONObject().put("name", name).put("messages", array))
+
+        val existing = data.optJSONObject(address)?.optJSONArray("unread")
+        val savedIds = chatMessages.map { it.id }.toSet()
+        val unread = JSONArray()
+        if (existing != null) {
+            for (i in 0 until existing.length()) {
+                val id = existing.optString(i)
+                if (id in savedIds) unread.put(id)
+            }
+        }
+
+        data.put(
+            address,
+            JSONObject().put("name", name).put("messages", array).put("unread", unread)
+        )
         write()
     }
 
@@ -121,6 +136,39 @@ object ChatStore {
         return result
     }
 
+    fun unreadCount(address: String): Int =
+        data.optJSONObject(address)?.optJSONArray("unread")?.length() ?: 0
+
+    fun addUnread(address: String, id: String) {
+        val entry = data.optJSONObject(address) ?: return
+        val array = entry.optJSONArray("unread") ?: JSONArray().also { entry.put("unread", it) }
+        for (i in 0 until array.length()) {
+            if (array.optString(i) == id) return
+        }
+        array.put(id)
+        write()
+    }
+
+    fun removeUnread(address: String, id: String): Boolean {
+        val array = data.optJSONObject(address)?.optJSONArray("unread") ?: return false
+        for (i in 0 until array.length()) {
+            if (array.optString(i) == id) {
+                array.remove(i)
+                write()
+                return true
+            }
+        }
+        return false
+    }
+
+    fun clearUnread(address: String) {
+        val entry = data.optJSONObject(address) ?: return
+        val array = entry.optJSONArray("unread")
+        if (array == null || array.length() == 0) return
+        entry.put("unread", JSONArray())
+        write()
+    }
+
     fun pendingAddresses(): List<String> {
         val result = mutableListOf<String>()
         val keys = data.keys()
@@ -163,7 +211,8 @@ object ChatStore {
                     address,
                     entry.optString("name", address),
                     lastText,
-                    last.getLong("time")
+                    last.getLong("time"),
+                    entry.optJSONArray("unread")?.length() ?: 0
                 )
             )
         }

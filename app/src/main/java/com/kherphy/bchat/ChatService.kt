@@ -69,6 +69,8 @@ class ChatService : Service() {
         when (intent?.action) {
             ACTION_DISCONNECT -> ChatConnection.disconnect()
             ACTION_QUIT -> quit()
+            Notifier.ACTION_ACCEPT -> ChatConnection.acceptPending()
+            Notifier.ACTION_DECLINE -> ChatConnection.rejectPending()
             else -> ChatConnection.resetAutoAttempts()
         }
         return START_NOT_STICKY

@@ -100,6 +100,8 @@ object ChatConnection {
         private set
     var remoteTyping: Boolean = false
         private set
+    var chatVisible: Boolean = false
+        private set
 
     private val messages = mutableListOf<Message>()
     val history: List<Message> get() = messages
@@ -127,6 +129,7 @@ object ChatConnection {
     fun init(context: Context) {
         appContext = context.applicationContext
         ChatStore.init(context)
+        Notifier.init(context)
         if (adapter == null) {
             adapter = context.applicationContext
                 .getSystemService(BluetoothManager::class.java)?.adapter
@@ -142,6 +145,41 @@ object ChatConnection {
 
     fun removeListener(listener: Listener) {
         listeners.remove(listener)
+    }
+
+    fun setChatVisible(visible: Boolean) {
+        chatVisible = visible
+        if (visible) markRead()
+    }
+
+    fun markRead() {
+        if (historyAddress.isBlank()) return
+        ChatStore.clearUnread(historyAddress)
+        Notifier.cancelMessages(historyAddress)
+    }
+
+    private fun previewFor(message: Message): String {
+        if (!Prefs.isPreview(ctx())) return ""
+        return if (message.imagePath != null) "📷 Photo" else message.text.take(100)
+    }
+
+    private fun onIncoming(message: Message) {
+        if (chatVisible || historyAddress.isBlank()) return
+        ChatStore.addUnread(historyAddress, message.id)
+        if (!Prefs.isAlerts(ctx())) return
+        val count = ChatStore.unreadCount(historyAddress).coerceAtLeast(1)
+        Notifier.showMessage(historyAddress, remoteName, previewFor(message), count, true)
+    }
+
+    private fun dropUnread(id: String) {
+        if (historyAddress.isBlank()) return
+        if (!ChatStore.removeUnread(historyAddress, id)) return
+        val left = ChatStore.unreadCount(historyAddress)
+        if (left == 0) {
+            Notifier.cancelMessages(historyAddress)
+        } else if (Prefs.isAlerts(ctx())) {
+            Notifier.showMessage(historyAddress, remoteName, "", left, false)
+        }
     }
 
     fun refreshListening() {
@@ -325,6 +363,7 @@ object ChatConnection {
         if (index < 0) return
         val removed = messages.removeAt(index)
         removed.imagePath?.let { File(it).delete() }
+        if (removed.type == MessageType.RECEIVED) dropUnread(id)
         persist()
         listeners.forEach { it.onMessageRemoved(id) }
     }
@@ -367,6 +406,7 @@ object ChatConnection {
         messages.clear()
         historyAddress = ""
         handler.removeCallbacks(autoRetry)
+        Notifier.cancelAllMessages()
     }
 
     fun resetAutoAttempts() {
@@ -375,6 +415,7 @@ object ChatConnection {
     }
 
     fun acceptPending() {
+        Notifier.cancelRequest()
         val socket = pendingSocket ?: return
         pendingSocket = null
         handler.removeCallbacks(pendingTimeout)
@@ -383,6 +424,7 @@ object ChatConnection {
     }
 
     fun rejectPending() {
+        Notifier.cancelRequest()
         val socket = pendingSocket ?: return
         pendingSocket = null
         handler.removeCallbacks(pendingTimeout)
@@ -480,6 +522,7 @@ object ChatConnection {
         val index = messages.indexOfFirst { it.id == id }
         if (index < 0) return
         val old = messages[index]
+        if (old.type == MessageType.RECEIVED) dropUnread(id)
         old.imagePath?.let { File(it).delete() }
         val updated = old.copy(
             text = "",
@@ -560,6 +603,7 @@ object ChatConnection {
             val device = socket.remoteDevice
             val name = device.name ?: device.address
             handler.postDelayed(pendingTimeout, REQUEST_TIMEOUT_MS)
+            Notifier.showRequest(name)
             listeners.forEach { it.onIncomingRequest(name) }
         } else {
             onConnected(socket)
@@ -650,21 +694,21 @@ object ChatConnection {
         sendExecutor.execute { thread.writeAck(cleanId) }
         if (messages.any { it.id == cleanId }) return
         setRemoteTyping(false)
-        addToHistory(
-            Message(
-                text,
-                System.currentTimeMillis(),
-                MessageType.RECEIVED,
-                null,
-                cleanId,
-                false,
-                false,
-                false,
-                replyId?.take(MAX_ID_LENGTH),
-                replyText.take(MAX_REPLY_LENGTH),
-                replyMine
-            )
+        val message = Message(
+            text,
+            System.currentTimeMillis(),
+            MessageType.RECEIVED,
+            null,
+            cleanId,
+            false,
+            false,
+            false,
+            replyId?.take(MAX_ID_LENGTH),
+            replyText.take(MAX_REPLY_LENGTH),
+            replyMine
         )
+        addToHistory(message)
+        onIncoming(message)
     }
 
     private fun ackReceived(thread: ConnectedThread, id: String) {
@@ -712,15 +756,15 @@ object ChatConnection {
             return
         }
         setRemoteTyping(false)
-        addToHistory(
-            Message(
-                "",
-                System.currentTimeMillis(),
-                MessageType.RECEIVED,
-                file.absolutePath,
-                id.take(MAX_ID_LENGTH)
-            )
+        val message = Message(
+            "",
+            System.currentTimeMillis(),
+            MessageType.RECEIVED,
+            file.absolutePath,
+            id.take(MAX_ID_LENGTH)
         )
+        addToHistory(message)
+        onIncoming(message)
         listeners.forEach { it.onIncomingImageEnded() }
     }
 
