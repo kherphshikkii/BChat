@@ -68,6 +68,9 @@ object ChatStore {
                 .put("deleted", message.deleted)
                 .put("pending", message.pending)
                 .put("unsendPending", message.unsendPending)
+                .put("myReact", message.myReaction)
+                .put("theirReact", message.theirReaction)
+                .put("reactPending", message.reactPending)
             message.imagePath?.let { path -> item.put("image", File(path).name) }
             message.replyToId?.let { replyId ->
                 item.put("replyId", replyId)
@@ -105,6 +108,9 @@ object ChatStore {
             val id = item.optString("id", "").ifEmpty { UUID.randomUUID().toString() }
             val imageName = item.optString("image", "")
             val replyId = item.optString("replyId", "").ifEmpty { null }
+            val myReact = item.optString("myReact", "")
+            val theirReact = item.optString("theirReact", "")
+            val reactPending = item.optBoolean("reactPending")
             when {
                 item.optBoolean("deleted") ->
                     result.add(
@@ -113,7 +119,18 @@ object ChatStore {
                 imageName.isNotEmpty() -> {
                     val image = File(imageDir(), imageName)
                     if (image.exists()) {
-                        result.add(Message("", time, type, image.absolutePath, id))
+                        result.add(
+                            Message(
+                                "",
+                                time,
+                                type,
+                                image.absolutePath,
+                                id,
+                                myReaction = myReact,
+                                theirReaction = theirReact,
+                                reactPending = reactPending
+                            )
+                        )
                     }
                 }
                 else -> result.add(
@@ -128,7 +145,10 @@ object ChatStore {
                         false,
                         replyId,
                         item.optString("replyText", ""),
-                        item.optBoolean("replyMine")
+                        item.optBoolean("replyMine"),
+                        myReact,
+                        theirReact,
+                        reactPending
                     )
                 )
             }
@@ -177,9 +197,11 @@ object ChatStore {
             val array = data.optJSONObject(address)?.optJSONArray("messages") ?: continue
             for (i in 0 until array.length()) {
                 val item = array.optJSONObject(i) ?: continue
-                val waitingText = item.optBoolean("pending") && !item.optBoolean("deleted")
-                val waitingUnsend = item.optBoolean("deleted") && item.optBoolean("unsendPending")
-                if (waitingText || waitingUnsend) {
+                val deleted = item.optBoolean("deleted")
+                val waitingText = item.optBoolean("pending") && !deleted
+                val waitingUnsend = deleted && item.optBoolean("unsendPending")
+                val waitingReact = item.optBoolean("reactPending") && !deleted
+                if (waitingText || waitingUnsend || waitingReact) {
                     result.add(address)
                     break
                 }

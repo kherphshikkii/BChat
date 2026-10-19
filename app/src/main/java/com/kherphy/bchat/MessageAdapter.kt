@@ -26,6 +26,7 @@ class MessageAdapter(
     private val onImageClick: (String) -> Unit,
     private val onLongClick: (Message) -> Unit,
     private val onQuoteClick: (String) -> Unit,
+    private val onReactionClick: (Message) -> Unit,
     private val nameProvider: () -> String
 ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
@@ -105,6 +106,7 @@ class MessageAdapter(
                 b.tvMessage.text = message.text
                 b.tvTime.text = if (message.pending) "Waiting to send · $time" else time
                 bindQuote(b.quoteBlock, b.tvQuoteName, b.tvQuoteText, message)
+                bindReactions(b.tvReactions, message)
                 b.bubble.setOnLongClickListener {
                     onLongClick(message)
                     true
@@ -115,6 +117,7 @@ class MessageAdapter(
                 b.tvMessage.text = message.text
                 b.tvTime.text = time
                 bindQuote(b.quoteBlock, b.tvQuoteName, b.tvQuoteText, message)
+                bindReactions(b.tvReactions, message)
                 b.bubble.setOnLongClickListener {
                     onLongClick(message)
                     true
@@ -122,6 +125,7 @@ class MessageAdapter(
             }
             is SentImageHolder -> {
                 bindImage(holder.binding.ivImage, message.imagePath)
+                bindReactions(holder.binding.tvReactions, message)
                 holder.binding.ivImage.setOnClickListener {
                     message.imagePath?.let(onImageClick)
                 }
@@ -133,6 +137,7 @@ class MessageAdapter(
             }
             is ReceivedImageHolder -> {
                 bindImage(holder.binding.ivImage, message.imagePath)
+                bindReactions(holder.binding.tvReactions, message)
                 holder.binding.ivImage.setOnClickListener {
                     message.imagePath?.let(onImageClick)
                 }
@@ -157,6 +162,26 @@ class MessageAdapter(
                 }
             }
             is NoticeHolder -> holder.binding.tvNotice.text = message.text
+        }
+    }
+
+    private fun bindReactions(view: TextView, message: Message) {
+        val mine = message.myReaction
+        val theirs = message.theirReaction
+        if (mine.isEmpty() && theirs.isEmpty()) {
+            view.visibility = View.GONE
+            view.setOnClickListener(null)
+            view.setOnLongClickListener(null)
+            return
+        }
+        val reactions = listOf(mine, theirs).filter { it.isNotEmpty() }
+        val emojis = reactions.distinct().joinToString("")
+        view.text = if (reactions.size > 1) "$emojis ${reactions.size}" else emojis
+        view.visibility = View.VISIBLE
+        view.setOnClickListener { onReactionClick(message) }
+        view.setOnLongClickListener {
+            onLongClick(message)
+            true
         }
     }
 

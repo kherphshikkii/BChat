@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingTop="8dp"
+    android:paddingBottom="16dp">
+
+    <LinearLayout
+        android:id="@+id/reactRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:orientation="horizontal"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp">
+
+        <TextView
+            android:id="@+id/emoji1"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="2dp"
+            android:layout_marginEnd="2dp"
+            android:gravity="center"
+            android:textSize="26sp" />
+
+        <TextView
+            android:id="@+id/emoji2"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="2dp"
+            android:layout_marginEnd="2dp"
+            android:gravity="center"
+            android:textSize="26sp" />
+
+        <TextView
+            android:id="@+id/emoji3"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="2dp"
+            android:layout_marginEnd="2dp"
+            android:gravity="center"
+            android:textSize="26sp" />
+
+        <TextView
+            android:id="@+id/emoji4"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="2dp"
+            android:layout_marginEnd="2dp"
+            android:gravity="center"
+            android:textSize="26sp" />
+
+        <TextView
+            android:id="@+id/emoji5"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="2dp"
+            android:layout_marginEnd="2dp"
+            android:gravity="center"
+            android:textSize="26sp" />
+
+        <TextView
+            android:id="@+id/emoji6"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="2dp"
+            android:layout_marginEnd="2dp"
+            android:gravity="center"
+            android:textSize="26sp" />
+    </LinearLayout>
+
+    <View
+        android:id="@+id/reactDivider"
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/divider" />
+
+    <TextView
+        android:id="@+id/actionReply"
+        android:layout_width="match_parent"
+        android:layout_height="52dp"
+        android:background="?attr/selectableItemBackground"
+        android:clickable="true"
+        android:focusable="true"
+        android:gravity="center_vertical"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp"
+        android:text="Reply"
+        android:textColor="@color/text_primary"
+        android:textSize="16sp" />
+
+    <TextView
+        android:id="@+id/actionCopy"
+        android:layout_width="match_parent"
+        android:layout_height="52dp"
+        android:background="?attr/selectableItemBackground"
+        android:clickable="true"
+        android:focusable="true"
+        android:gravity="center_vertical"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp"
+        android:text="Copy"
+        android:textColor="@color/text_primary"
+        android:textSize="16sp" />
+
+    <TextView
+        android:id="@+id/actionDelete"
+        android:layout_width="match_parent"
+        android:layout_height="52dp"
+        android:background="?attr/selectableItemBackground"
+        android:clickable="true"
+        android:focusable="true"
+        android:gravity="center_vertical"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp"
+        android:text="Delete"
+        android:textColor="@color/status_disconnected"
+        android:textSize="16sp" />
+</LinearLayout>

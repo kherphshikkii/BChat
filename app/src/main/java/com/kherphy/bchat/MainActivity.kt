@@ -27,8 +27,10 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.kherphy.bchat.databinding.ActivityMainBinding
+import com.kherphy.bchat.databinding.SheetMessageActionsBinding
 import java.io.File
 
 class MainActivity : AppCompatActivity() {
@@ -39,6 +41,7 @@ class MainActivity : AppCompatActivity() {
         onImageClick = { path -> ImageViewerActivity.open(this, path) },
         onLongClick = { message -> showActions(message) },
         onQuoteClick = { id -> scrollToMessage(id) },
+        onReactionClick = { message -> showReactions(message) },
         nameProvider = { ChatConnection.remoteName.ifBlank { "They" } }
     )
 
@@ -332,20 +335,87 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showActions(message: Message) {
-        val options = mutableListOf<String>()
-        if (message.text.isNotEmpty() && !message.deleted) options.add(ACTION_COPY)
-        if (!message.deleted) options.add(ACTION_REPLY)
-        options.add(if (message.pending) ACTION_CANCEL else ACTION_DELETE)
+        val sheet = BottomSheetDialog(this)
+        val sheetBinding = SheetMessageActionsBinding.inflate(layoutInflater)
+        sheet.setContentView(sheetBinding.root)
+
+        val canReact = !message.deleted &&
+                !(message.type == MessageType.SENT && message.pending)
+        val reactVisibility = if (canReact) View.VISIBLE else View.GONE
+        sheetBinding.reactRow.visibility = reactVisibility
+        sheetBinding.reactDivider.visibility = reactVisibility
+
+        val emojiViews = listOf(
+            sheetBinding.emoji1,
+            sheetBinding.emoji2,
+            sheetBinding.emoji3,
+            sheetBinding.emoji4,
+            sheetBinding.emoji5,
+            sheetBinding.emoji6
+        )
+        REACTIONS.forEachIndexed { index, emoji ->
+            val view = emojiViews[index]
+            view.text = emoji
+            if (message.myReaction == emoji) {
+                view.setBackgroundResource(R.drawable.bg_circle)
+                view.backgroundTintList = ColorStateList.valueOf(
+                    ContextCompat.getColor(this, R.color.primary_container)
+                )
+            } else {
+                view.background = null
+            }
+            view.setOnClickListener {
+                sheet.dismiss()
+                ChatConnection.react(message.id, emoji)
+            }
+        }
+
+        sheetBinding.actionReply.visibility =
+            if (message.deleted) View.GONE else View.VISIBLE
+        sheetBinding.actionCopy.visibility =
+            if (message.text.isNotEmpty() && !message.deleted) View.VISIBLE else View.GONE
+        sheetBinding.actionDelete.text = if (message.pending) "Cancel sending" else "Delete"
+
+        sheetBinding.actionReply.setOnClickListener {
+            sheet.dismiss()
+            startReply(message)
+        }
+        sheetBinding.actionCopy.setOnClickListener {
+            sheet.dismiss()
+            copyText(message.text)
+        }
+        sheetBinding.actionDelete.setOnClickListener {
+            sheet.dismiss()
+            if (message.pending) {
+                ChatConnection.deleteForMe(message.id)
+            } else {
+                showDeleteDialog(message)
+            }
+        }
+
+        sheet.show()
+    }
+
+    private fun showReactions(message: Message) {
+        val name = ChatConnection.remoteName.ifBlank { "They" }
+        val rows = mutableListOf<String>()
+        val mineFlags = mutableListOf<Boolean>()
+        if (message.myReaction.isNotEmpty()) {
+            rows.add("You   ${message.myReaction}\nTap to remove")
+            mineFlags.add(true)
+        }
+        if (message.theirReaction.isNotEmpty()) {
+            rows.add("$name   ${message.theirReaction}")
+            mineFlags.add(false)
+        }
+        if (rows.isEmpty()) return
 
         MaterialAlertDialogBuilder(this)
-            .setItems(options.toTypedArray()) { _, which ->
-                when (options[which]) {
-                    ACTION_COPY -> copyText(message.text)
-                    ACTION_REPLY -> startReply(message)
-                    ACTION_CANCEL -> ChatConnection.deleteForMe(message.id)
-                    else -> showDeleteDialog(message)
-                }
+            .setTitle("Reactions")
+            .setItems(rows.toTypedArray()) { _, which ->
+                if (mineFlags[which]) ChatConnection.react(message.id, message.myReaction)
             }
+            .setNegativeButton("Close", null)
             .show()
     }
 
@@ -555,9 +625,6 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val TYPING_REFRESH_MS = 3_000L
         private const val TYPING_STOP_MS = 4_000L
-        private const val ACTION_COPY = "Copy"
-        private const val ACTION_REPLY = "Reply"
-        private const val ACTION_CANCEL = "Cancel sending"
-        private const val ACTION_DELETE = "Delete"
+        private val REACTIONS = listOf("❤️", "😆", "😮", "😢", "😠", "👍")
     }
 }

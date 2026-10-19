@@ -19,5 +19,8 @@ data class Message(
     val unsendPending: Boolean = false,
     val replyToId: String? = null,
     val replyText: String = "",
-    val replyMine: Boolean = false
+    val replyMine: Boolean = false,
+    val myReaction: String = "",
+    val theirReaction: String = "",
+    val reactPending: Boolean = false
 )

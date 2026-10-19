@@ -39,12 +39,14 @@ object ChatConnection {
     private const val TYPE_TYPING: Byte = 8
     private const val TYPE_ACK: Byte = 9
     private const val TYPE_REPLY: Byte = 10
+    private const val TYPE_REACT: Byte = 11
 
     private const val CHUNK_SIZE = 8192
     private const val MAX_CHUNK_SIZE = 65536
     private const val MAX_IMAGE_BYTES = 3_000_000
     private const val MAX_ID_LENGTH = 64
     private const val MAX_REPLY_LENGTH = 120
+    private const val MAX_REACTION_LENGTH = 16
     private const val REQUEST_TIMEOUT_MS = 30_000L
     private const val TYPING_TIMEOUT_MS = 6_000L
     private const val AUTO_RETRY_MIN_MS = 45_000L
@@ -358,6 +360,38 @@ object ChatConnection {
         sendExecutor.execute { thread.writeTyping(typing) }
     }
 
+    fun react(id: String, emoji: String) {
+        val index = messages.indexOfFirst { it.id == id }
+        if (index < 0) return
+        val old = messages[index]
+        if (old.deleted || old.type == MessageType.NOTICE) return
+        if (old.type == MessageType.SENT && old.pending) return
+
+        val next = if (old.myReaction == emoji) "" else emoji.take(MAX_REACTION_LENGTH)
+        val thread = connectedThread
+        val live = state == State.CONNECTED && thread != null
+        val updated = old.copy(myReaction = next, reactPending = !live)
+        messages[index] = updated
+        persist()
+        listeners.forEach { it.onMessageChanged(updated) }
+
+        if (live && thread != null) {
+            sendExecutor.execute {
+                val ok = thread.writeReact(id, next)
+                if (!ok) handler.post { markReactPending(id) }
+            }
+        } else {
+            resetAutoAttempts()
+        }
+    }
+
+    private fun markReactPending(id: String) {
+        val index = messages.indexOfFirst { it.id == id }
+        if (index < 0) return
+        messages[index] = messages[index].copy(reactPending = true)
+        persist()
+    }
+
     fun deleteForMe(id: String) {
         val index = messages.indexOfFirst { it.id == id }
         if (index < 0) return
@@ -465,10 +499,13 @@ object ChatConnection {
         val waiting = messages.filter {
             it.type == MessageType.SENT && it.pending && !it.deleted && it.imagePath == null
         }
+        val reacts = messages
+            .filter { it.reactPending && !it.deleted }
+            .map { it.id to it.myReaction }
         val unsends = messages
             .filter { it.type == MessageType.SENT && it.deleted && it.unsendPending }
             .map { it.id }
-        if (waiting.isEmpty() && unsends.isEmpty()) return
+        if (waiting.isEmpty() && unsends.isEmpty() && reacts.isEmpty()) return
         sendExecutor.execute {
             waiting.forEach { m ->
                 val replyId = m.replyToId
@@ -478,9 +515,23 @@ object ChatConnection {
                     thread.writeReply(m.id, m.text, replyId, m.replyText, m.replyMine)
                 }
             }
+            val reacted = reacts.filter { thread.writeReact(it.first, it.second) }.map { it.first }
+            if (reacted.isNotEmpty()) handler.post { clearReactPending(reacted) }
             val done = unsends.filter { thread.writeUnsend(it) }
             if (done.isNotEmpty()) handler.post { clearUnsendPending(done) }
         }
+    }
+
+    private fun clearReactPending(ids: List<String>) {
+        var changed = false
+        ids.forEach { id ->
+            val index = messages.indexOfFirst { it.id == id }
+            if (index >= 0 && messages[index].reactPending) {
+                messages[index] = messages[index].copy(reactPending = false)
+                changed = true
+            }
+        }
+        if (changed) persist()
     }
 
     private fun clearUnsendPending(ids: List<String>) {
@@ -532,7 +583,10 @@ object ChatConnection {
             unsendPending = queueUnsend,
             replyToId = null,
             replyText = "",
-            replyMine = false
+            replyMine = false,
+            myReaction = "",
+            theirReaction = "",
+            reactPending = false
         )
         messages[index] = updated
 
@@ -723,6 +777,20 @@ object ChatConnection {
         listeners.forEach { it.onMessageChanged(updated) }
     }
 
+    private fun reactionReceived(thread: ConnectedThread, id: String, emoji: String) {
+        if (thread !== connectedThread) return
+        val index = messages.indexOfFirst { it.id == id.take(MAX_ID_LENGTH) }
+        if (index < 0) return
+        val old = messages[index]
+        if (old.deleted) return
+        val clean = emoji.take(MAX_REACTION_LENGTH)
+        if (old.theirReaction == clean) return
+        val updated = old.copy(theirReaction = clean)
+        messages[index] = updated
+        persist()
+        listeners.forEach { it.onMessageChanged(updated) }
+    }
+
     private fun unsendReceived(thread: ConnectedThread, id: String) {
         if (thread !== connectedThread) return
         val target = messages.firstOrNull { it.id == id.take(MAX_ID_LENGTH) } ?: return
@@ -874,6 +942,11 @@ object ChatConnection {
                         TYPE_ACK -> {
                             val id = input.readUTF()
                             handler.post { ackReceived(this@ConnectedThread, id) }
+                        }
+                        TYPE_REACT -> {
+                            val id = input.readUTF()
+                            val emoji = input.readUTF()
+                            handler.post { reactionReceived(this@ConnectedThread, id, emoji) }
                         }
                         TYPE_IMAGE_START -> startIncoming(input.readInt(), input.readUTF())
                         TYPE_IMAGE_CHUNK -> readChunk()
@@ -1027,6 +1100,18 @@ object ChatConnection {
             synchronized(output) {
                 output.writeByte(TYPE_ACK.toInt())
                 output.writeUTF(id)
+                output.flush()
+            }
+            true
+        } catch (e: IOException) {
+            false
+        }
+
+        fun writeReact(id: String, emoji: String): Boolean = try {
+            synchronized(output) {
+                output.writeByte(TYPE_REACT.toInt())
+                output.writeUTF(id)
+                output.writeUTF(emoji)
                 output.flush()
             }
             true
