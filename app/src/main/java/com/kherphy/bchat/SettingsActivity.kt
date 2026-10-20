@@ -19,7 +19,6 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var binding: ActivitySettingsBinding
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
@@ -44,6 +43,8 @@ class SettingsActivity : AppCompatActivity() {
         binding.switchPreview.isChecked = Prefs.isPreview(this)
 
         binding.btnBack.setOnClickListener { finish() }
+        binding.tvThemeValue.text = ThemeHelper.label(Prefs.getTheme(this))
+        binding.rowTheme.setOnClickListener { showThemeDialog() }
 
         binding.switchVisible.setOnCheckedChangeListener { _, checked ->
             Prefs.setVisible(this, checked)
@@ -70,7 +71,24 @@ class SettingsActivity : AppCompatActivity() {
         super.onPause()
         Prefs.setName(this, binding.etName.text.toString())
     }
+    private fun showThemeDialog() {
+        val values = listOf(ThemeHelper.LIGHT, ThemeHelper.DARK, ThemeHelper.SYSTEM)
+        val labels = values.map { ThemeHelper.label(it) }.toTypedArray()
+        val current = values.indexOf(Prefs.getTheme(this)).coerceAtLeast(0)
 
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Theme")
+            .setSingleChoiceItems(labels, current) { dialog, which ->
+                dialog.dismiss()
+                val chosen = values[which]
+                if (chosen != Prefs.getTheme(this)) {
+                    Prefs.setTheme(this, chosen)
+                    ThemeHelper.apply(this)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
     private fun openSoundSettings() {
         val intent = Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
             .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)

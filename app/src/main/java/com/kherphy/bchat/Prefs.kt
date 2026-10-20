@@ -54,6 +54,14 @@ object Prefs {
     fun setAskBefore(context: Context, value: Boolean) {
         prefs(context).edit().putBoolean(KEY_ASK, value).apply()
     }
+    private const val KEY_THEME = "theme_mode"
+
+    fun getTheme(context: Context): String =
+        prefs(context).getString(KEY_THEME, "system") ?: "system"
+
+    fun setTheme(context: Context, value: String) {
+        prefs(context).edit().putString(KEY_THEME, value).apply()
+    }
     private const val KEY_ASKED_NOTIF = "asked_notifications"
 
     fun hasAskedNotifications(context: Context): Boolean =
