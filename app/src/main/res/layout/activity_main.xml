@@ -8,18 +8,7 @@
     android:background="@color/surface"
     android:orientation="vertical"
     tools:context=".MainActivity">
-    <TextView
-        android:id="@+id/tvTyping"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:paddingStart="20dp"
-        android:paddingTop="4dp"
-        android:paddingEnd="20dp"
-        android:paddingBottom="4dp"
-        android:textColor="@color/text_secondary"
-        android:textSize="13sp"
-        android:textStyle="italic"
-        android:visibility="gone" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -36,6 +25,44 @@
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="Back"
             android:src="@drawable/ic_arrow_back" />
+
+        <FrameLayout
+            android:id="@+id/avatarFrame"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:clickable="true"
+            android:contentDescription="View profile"
+            android:focusable="true">
+
+            <com.kherphy.bchat.AvatarView
+                android:id="@+id/avatarHeader"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_gravity="center" />
+
+            <FrameLayout
+                android:id="@+id/onlineDot"
+                android:layout_width="14dp"
+                android:layout_height="14dp"
+                android:layout_gravity="bottom|end"
+                android:layout_marginEnd="2dp"
+                android:layout_marginBottom="2dp">
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/bg_circle"
+                    android:backgroundTint="@color/surface" />
+
+                <View
+                    android:layout_width="10dp"
+                    android:layout_height="10dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/bg_circle"
+                    android:backgroundTint="@color/status_connected" />
+            </FrameLayout>
+        </FrameLayout>
 
         <LinearLayout
             android:layout_width="0dp"
@@ -97,6 +124,19 @@
         android:layout_weight="1"
         android:clipToPadding="false"
         android:padding="16dp" />
+
+    <TextView
+        android:id="@+id/tvTyping"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingStart="20dp"
+        android:paddingTop="4dp"
+        android:paddingEnd="20dp"
+        android:paddingBottom="4dp"
+        android:textColor="@color/text_secondary"
+        android:textSize="13sp"
+        android:textStyle="italic"
+        android:visibility="gone" />
 
     <LinearLayout
         android:id="@+id/transferBar"

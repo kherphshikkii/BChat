@@ -37,7 +37,7 @@ class ConversationAdapter(
         val context = b.root.context
         val unread = item.unread > 0
 
-        b.tvInitial.text = item.name.firstOrNull()?.uppercase() ?: "?"
+        b.avatar.set(item.name, AvatarStore.theirFile(item.address))
         b.tvName.text = item.name
         b.tvLast.text = item.lastText
         b.tvTime.text = Format.listTime(item.lastTime)

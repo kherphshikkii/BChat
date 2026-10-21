@@ -4,19 +4,37 @@ import android.content.DialogInterface
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.View
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.kherphy.bchat.databinding.ActivitySettingsBinding
+import com.kherphy.bchat.databinding.SheetProfilePhotoBinding
 
 class SettingsActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivitySettingsBinding
+
+    private val pickImage = registerForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) startPreview(uri)
+    }
+
+    private val previewLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        refreshAvatar()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -34,8 +52,10 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         ChatConnection.init(this)
+        AvatarStore.init(this)
 
         binding.etName.setText(Prefs.getName(this))
+        binding.tvProfileName.text = Prefs.getName(this)
         binding.switchVisible.isChecked = Prefs.isVisible(this)
         binding.switchSave.isChecked = Prefs.isSaveHistory(this)
         binding.switchAsk.isChecked = Prefs.isAskBefore(this)
@@ -45,6 +65,19 @@ class SettingsActivity : AppCompatActivity() {
         binding.btnBack.setOnClickListener { finish() }
         binding.tvThemeValue.text = ThemeHelper.label(Prefs.getTheme(this))
         binding.rowTheme.setOnClickListener { showThemeDialog() }
+
+        binding.avatarFrame.setOnClickListener { showPhotoSheet() }
+        binding.btnChangePhoto.setOnClickListener { showPhotoSheet() }
+
+        binding.etName.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+
+            override fun afterTextChanged(s: Editable?) {
+                refreshAvatar()
+            }
+        })
 
         binding.switchVisible.setOnCheckedChangeListener { _, checked ->
             Prefs.setVisible(this, checked)
@@ -67,10 +100,58 @@ class SettingsActivity : AppCompatActivity() {
         binding.rowClear.setOnClickListener { confirmClear() }
     }
 
+    override fun onResume() {
+        super.onResume()
+        refreshAvatar()
+    }
+
     override fun onPause() {
         super.onPause()
         Prefs.setName(this, binding.etName.text.toString())
     }
+
+    private fun currentName(): String =
+        binding.etName.text.toString().trim().ifBlank { Prefs.getName(this) }
+
+    private fun refreshAvatar() {
+        val name = currentName()
+        binding.tvProfileName.text = name
+        binding.avatarMe.set(name, AvatarStore.myFile())
+    }
+
+    private fun showPhotoSheet() {
+        val sheet = BottomSheetDialog(this)
+        val sheetBinding = SheetProfilePhotoBinding.inflate(layoutInflater)
+        sheet.setContentView(sheetBinding.root)
+
+        sheetBinding.actionRemove.visibility =
+            if (AvatarStore.myFile() != null) View.VISIBLE else View.GONE
+
+        sheetBinding.actionGallery.setOnClickListener {
+            sheet.dismiss()
+            pickImage.launch(
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+            )
+        }
+        sheetBinding.actionRemove.setOnClickListener {
+            sheet.dismiss()
+            AvatarStore.removeMine()
+            ChatConnection.sendAvatarIfConnected()
+            refreshAvatar()
+        }
+        sheet.show()
+    }
+
+    private fun startPreview(uri: android.net.Uri) {
+        AvatarUtils.prepareAsync(this, uri) { file ->
+            if (file == null) {
+                Toast.makeText(this, "Couldn't read that photo", Toast.LENGTH_SHORT).show()
+            } else {
+                previewLauncher.launch(Intent(this, PhotoPreviewActivity::class.java))
+            }
+        }
+    }
+
     private fun showThemeDialog() {
         val values = listOf(ThemeHelper.LIGHT, ThemeHelper.DARK, ThemeHelper.SYSTEM)
         val labels = values.map { ThemeHelper.label(it) }.toTypedArray()
@@ -89,6 +170,7 @@ class SettingsActivity : AppCompatActivity() {
             .setNegativeButton("Cancel", null)
             .show()
     }
+
     private fun openSoundSettings() {
         val intent = Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
             .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)

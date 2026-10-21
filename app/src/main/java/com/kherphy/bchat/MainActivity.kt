@@ -3,6 +3,7 @@ package com.kherphy.bchat
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.DialogInterface
+import android.content.Intent
 import android.content.res.ColorStateList
 import android.net.Uri
 import android.os.Build
@@ -22,7 +23,6 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -42,7 +42,8 @@ class MainActivity : AppCompatActivity() {
         onLongClick = { message -> showActions(message) },
         onQuoteClick = { id -> scrollToMessage(id) },
         onReactionClick = { message -> showReactions(message) },
-        nameProvider = { ChatConnection.remoteName.ifBlank { "They" } }
+        nameProvider = { ChatConnection.remoteName.ifBlank { "They" } },
+        avatarProvider = { AvatarStore.theirFile(ChatConnection.remoteAddress) }
     )
 
     private val uiHandler = Handler(Looper.getMainLooper())
@@ -95,7 +96,15 @@ class MainActivity : AppCompatActivity() {
 
         override fun onRemoteNameChanged(name: String) {
             binding.tvDeviceName.text = name
+            refreshHeaderAvatar()
+            adapter.refreshAll()
             renderTyping()
+        }
+
+        override fun onAvatarChanged(address: String) {
+            if (address != ChatConnection.remoteAddress) return
+            refreshHeaderAvatar()
+            adapter.refreshAll()
         }
 
         override fun onIncomingRequest(name: String) {
@@ -118,7 +127,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
         super.onCreate(savedInstanceState)
 
         if (ChatConnection.remoteAddress.isBlank()) {
@@ -191,6 +199,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupButtons() {
         binding.btnBack.setOnClickListener { leaveChat() }
+
+        binding.avatarFrame.setOnClickListener {
+            startActivity(Intent(this, ProfileActivity::class.java))
+        }
 
         binding.btnSend.setOnClickListener { sendMessage() }
 
@@ -579,6 +591,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun render(state: ChatConnection.State) {
         binding.tvDeviceName.text = ChatConnection.remoteName.ifBlank { "Unknown device" }
+        refreshHeaderAvatar()
+        binding.onlineDot.visibility =
+            if (state == ChatConnection.State.CONNECTED) View.VISIBLE else View.GONE
         binding.composeBar.visibility = View.VISIBLE
 
         when (state) {
@@ -609,6 +624,11 @@ class MainActivity : AppCompatActivity() {
             }
         }
         renderTyping()
+    }
+
+    private fun refreshHeaderAvatar() {
+        val name = ChatConnection.remoteName.ifBlank { "?" }
+        binding.avatarHeader.set(name, AvatarStore.theirFile(ChatConnection.remoteAddress))
     }
 
     private fun showStatus(text: String, colorRes: Int) {

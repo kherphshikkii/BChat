@@ -17,7 +17,6 @@ import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -38,6 +37,10 @@ class HomeActivity : AppCompatActivity() {
 
         override fun onIncomingRequest(name: String) {
             RequestDialog.show(this@HomeActivity, name)
+        }
+
+        override fun onAvatarChanged(address: String) {
+            loadConversations()
         }
     }
 
@@ -70,7 +73,6 @@ class HomeActivity : AppCompatActivity() {
     ) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
@@ -91,7 +93,7 @@ class HomeActivity : AppCompatActivity() {
         binding.rvChats.adapter = conversationAdapter
 
         binding.btnAction.setOnClickListener { onActionClicked() }
-        binding.btnSettings.setOnClickListener {
+        binding.btnProfile.setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
         binding.btnVisible.setOnClickListener { makeVisible() }
@@ -99,12 +101,13 @@ class HomeActivity : AppCompatActivity() {
         if (Prefs.hasName(this)) {
             askNotificationPermission()
         } else {
-            NameDialog.show(this) { askNotificationPermission()
+            NameDialog.show(this) {
+                refreshMyAvatar()
+                askNotificationPermission()
             }
         }
         handleOpenRequest(intent)
     }
-
 
     override fun onStart() {
         super.onStart()
@@ -116,6 +119,7 @@ class HomeActivity : AppCompatActivity() {
             ContextCompat.RECEIVER_EXPORTED
         )
         ChatService.start(this)
+        refreshMyAvatar()
         ChatConnection.refreshListening()
         renderStatus()
         loadConversations()
@@ -126,6 +130,28 @@ class HomeActivity : AppCompatActivity() {
         super.onStop()
         ChatConnection.removeListener(connectionListener)
         unregisterReceiver(bluetoothStateReceiver)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleOpenRequest(intent)
+    }
+
+    private fun handleOpenRequest(intent: Intent?) {
+        val address = intent?.getStringExtra(EXTRA_OPEN_ADDRESS) ?: return
+        val name = intent.getStringExtra(EXTRA_OPEN_NAME).orEmpty()
+        intent.removeExtra(EXTRA_OPEN_ADDRESS)
+        intent.removeExtra(EXTRA_OPEN_NAME)
+        val busy = ChatConnection.state == ChatConnection.State.CONNECTED ||
+                ChatConnection.state == ChatConnection.State.CONNECTING
+        if (busy) return
+        ChatConnection.openSavedChat(address, name.ifBlank { address })
+        startActivity(Intent(this, MainActivity::class.java))
+    }
+
+    private fun refreshMyAvatar() {
+        binding.avatarMe.set(Prefs.getName(this), AvatarStore.myFile())
     }
 
     private fun renderStatus() {
@@ -214,29 +240,13 @@ class HomeActivity : AppCompatActivity() {
         Prefs.setAskedNotifications(this)
         notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        handleOpenRequest(intent)
-    }
 
-    private fun handleOpenRequest(intent: Intent?) {
-        val address = intent?.getStringExtra(EXTRA_OPEN_ADDRESS) ?: return
-        val name = intent.getStringExtra(EXTRA_OPEN_NAME).orEmpty()
-        intent.removeExtra(EXTRA_OPEN_ADDRESS)
-        intent.removeExtra(EXTRA_OPEN_NAME)
-        val busy = ChatConnection.state == ChatConnection.State.CONNECTED ||
-                ChatConnection.state == ChatConnection.State.CONNECTING
-        if (busy) return
-        ChatConnection.openSavedChat(address, name.ifBlank { address })
-        startActivity(Intent(this, MainActivity::class.java))
+    private fun toast(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
     companion object {
         const val EXTRA_OPEN_ADDRESS = "open_address"
         const val EXTRA_OPEN_NAME = "open_name"
-    }
-    private fun toast(message: String) {
-        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 }

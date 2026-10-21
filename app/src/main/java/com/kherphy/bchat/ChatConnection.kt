@@ -7,6 +7,7 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothServerSocket
 import android.bluetooth.BluetoothSocket
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -40,10 +41,12 @@ object ChatConnection {
     private const val TYPE_ACK: Byte = 9
     private const val TYPE_REPLY: Byte = 10
     private const val TYPE_REACT: Byte = 11
+    private const val TYPE_AVATAR: Byte = 12
 
     private const val CHUNK_SIZE = 8192
     private const val MAX_CHUNK_SIZE = 65536
     private const val MAX_IMAGE_BYTES = 3_000_000
+    private const val MAX_AVATAR_BYTES = 120_000
     private const val MAX_ID_LENGTH = 64
     private const val MAX_REPLY_LENGTH = 120
     private const val MAX_REACTION_LENGTH = 16
@@ -92,6 +95,7 @@ object ChatConnection {
         fun onIncomingImageProgress(received: Int, total: Int) {}
         fun onIncomingImageEnded() {}
         fun onTypingChanged(typing: Boolean) {}
+        fun onAvatarChanged(address: String) {}
     }
 
     var state: State = State.IDLE
@@ -132,6 +136,7 @@ object ChatConnection {
         appContext = context.applicationContext
         ChatStore.init(context)
         Notifier.init(context)
+        AvatarStore.init(context)
         if (adapter == null) {
             adapter = context.applicationContext
                 .getSystemService(BluetoothManager::class.java)?.adapter
@@ -360,6 +365,28 @@ object ChatConnection {
         sendExecutor.execute { thread.writeTyping(typing) }
     }
 
+    fun sendAvatarIfConnected() {
+        val thread = connectedThread
+        if (state != State.CONNECTED || thread == null) return
+        sendAvatar(thread)
+    }
+
+    private fun sendAvatar(thread: ConnectedThread) {
+        val version = AvatarStore.myVersion()
+        if (version == 0L) return
+        val file = AvatarStore.myFile()
+        val bytes = if (file == null) {
+            ByteArray(0)
+        } else {
+            try {
+                file.readBytes()
+            } catch (e: IOException) {
+                ByteArray(0)
+            }
+        }
+        sendExecutor.execute { thread.writeAvatar(version, bytes) }
+    }
+
     fun react(id: String, emoji: String) {
         val index = messages.indexOfFirst { it.id == id }
         if (index < 0) return
@@ -441,6 +468,7 @@ object ChatConnection {
         historyAddress = ""
         handler.removeCallbacks(autoRetry)
         Notifier.cancelAllMessages()
+        AvatarStore.clearTheirs()
     }
 
     fun resetAutoAttempts() {
@@ -713,6 +741,7 @@ object ChatConnection {
 
         val myName = Prefs.getName(ctx())
         sendExecutor.execute { thread.writeHello(myName) }
+        sendAvatar(thread)
         flushPending(thread)
     }
 
@@ -733,6 +762,23 @@ object ChatConnection {
         remoteName = name
         persist()
         listeners.forEach { it.onRemoteNameChanged(name) }
+    }
+
+    private fun avatarReceived(thread: ConnectedThread, version: Long, bytes: ByteArray) {
+        if (thread !== connectedThread) return
+        val address = remoteAddress
+        if (address.isBlank()) return
+        if (AvatarStore.theirVersion(address) == version) return
+        if (bytes.isEmpty()) {
+            AvatarStore.removeTheirs(address, version)
+        } else {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            if (bounds.outWidth <= 0 || bounds.outWidth > 1024) return
+            if (bounds.outHeight <= 0 || bounds.outHeight > 1024) return
+            if (!AvatarStore.saveTheirs(address, version, bytes)) return
+        }
+        listeners.forEach { it.onAvatarChanged(address) }
     }
 
     private fun textReceived(
@@ -948,6 +994,16 @@ object ChatConnection {
                             val emoji = input.readUTF()
                             handler.post { reactionReceived(this@ConnectedThread, id, emoji) }
                         }
+                        TYPE_AVATAR -> {
+                            val version = input.readLong()
+                            val length = input.readInt()
+                            if (length < 0 || length > MAX_AVATAR_BYTES) {
+                                throw IOException("Bad avatar size")
+                            }
+                            val data = ByteArray(length)
+                            input.readFully(data)
+                            handler.post { avatarReceived(this@ConnectedThread, version, data) }
+                        }
                         TYPE_IMAGE_START -> startIncoming(input.readInt(), input.readUTF())
                         TYPE_IMAGE_CHUNK -> readChunk()
                         TYPE_IMAGE_END -> finishIncoming()
@@ -1112,6 +1168,19 @@ object ChatConnection {
                 output.writeByte(TYPE_REACT.toInt())
                 output.writeUTF(id)
                 output.writeUTF(emoji)
+                output.flush()
+            }
+            true
+        } catch (e: IOException) {
+            false
+        }
+
+        fun writeAvatar(version: Long, bytes: ByteArray): Boolean = try {
+            synchronized(output) {
+                output.writeByte(TYPE_AVATAR.toInt())
+                output.writeLong(version)
+                output.writeInt(bytes.size)
+                output.write(bytes)
                 output.flush()
             }
             true

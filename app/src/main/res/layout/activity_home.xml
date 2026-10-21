@@ -37,16 +37,23 @@
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:contentDescription="Make my phone visible"
                 android:src="@drawable/ic_my_location"
-                android:tint="@color/text_primary" />
+                app:tint="@color/text_primary" />
 
-            <ImageButton
-                android:id="@+id/btnSettings"
+            <FrameLayout
+                android:id="@+id/btnProfile"
                 android:layout_width="48dp"
                 android:layout_height="48dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
-                android:contentDescription="Settings"
-                android:src="@drawable/ic_settings"
-                android:tint="@color/text_primary" />
+                android:clickable="true"
+                android:contentDescription="Profile and settings"
+                android:focusable="true">
+
+                <com.kherphy.bchat.AvatarView
+                    android:id="@+id/avatarMe"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_gravity="center" />
+            </FrameLayout>
         </LinearLayout>
 
         <LinearLayout
@@ -76,8 +83,8 @@
                 android:layout_height="24dp"
                 android:importantForAccessibility="no"
                 android:src="@drawable/ic_bluetooth_off"
-                android:tint="@color/status_disconnected"
-                android:visibility="gone" />
+                android:visibility="gone"
+                app:tint="@color/status_disconnected" />
 
             <LinearLayout
                 android:layout_width="0dp"
