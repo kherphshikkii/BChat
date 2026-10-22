@@ -107,6 +107,7 @@ object ChatStore {
                 .put("myReact", message.myReaction)
                 .put("theirReact", message.theirReaction)
                 .put("reactPending", message.reactPending)
+                .put("seen", message.seen)
             if (message.type == MessageType.NOTICE) {
                 item.put("notice", true)
                     .put("nameOld", message.nameOld)
@@ -174,6 +175,7 @@ object ChatStore {
             val myReact = item.optString("myReact", "")
             val theirReact = item.optString("theirReact", "")
             val reactPending = item.optBoolean("reactPending")
+            val seen = item.optBoolean("seen")
             when {
                 item.optBoolean("deleted") ->
                     result.add(
@@ -191,7 +193,8 @@ object ChatStore {
                                 id,
                                 myReaction = myReact,
                                 theirReaction = theirReact,
-                                reactPending = reactPending
+                                reactPending = reactPending,
+                                seen = seen
                             )
                         )
                     }
@@ -211,7 +214,8 @@ object ChatStore {
                         item.optBoolean("replyMine"),
                         myReact,
                         theirReact,
-                        reactPending
+                        reactPending,
+                        seen = seen
                     )
                 )
             }

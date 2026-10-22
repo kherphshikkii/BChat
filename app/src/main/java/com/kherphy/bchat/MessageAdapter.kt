@@ -36,20 +36,34 @@ class MessageAdapter(
 
     private val messages = mutableListOf<Message>()
     private val timeFormat = SimpleDateFormat("h:mm", Locale.getDefault())
+    private var seenIndex = -1
 
     private val cache = object : LruCache<String, Bitmap>(CACHE_KB) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount / 1024
+    }
+
+    private fun computeSeenIndex(): Int =
+        messages.indexOfLast { it.type == MessageType.SENT && it.seen && !it.deleted }
+
+    private fun refreshSeen() {
+        val old = seenIndex
+        seenIndex = computeSeenIndex()
+        if (old == seenIndex) return
+        if (old in 0 until messages.size) notifyItemChanged(old)
+        if (seenIndex >= 0) notifyItemChanged(seenIndex)
     }
 
     fun addMessage(message: Message) {
         messages.add(message)
         notifyItemInserted(messages.size - 1)
         if (messages.size >= 2) notifyItemChanged(messages.size - 2)
+        refreshSeen()
     }
 
     fun setAll(list: List<Message>) {
         messages.clear()
         messages.addAll(list)
+        seenIndex = computeSeenIndex()
         notifyDataSetChanged()
     }
 
@@ -60,6 +74,7 @@ class MessageAdapter(
         val from = max(0, index - 1)
         val to = min(messages.size - 1, index + 1)
         notifyItemRangeChanged(from, to - from + 1)
+        refreshSeen()
     }
 
     fun remove(id: String) {
@@ -69,6 +84,8 @@ class MessageAdapter(
         notifyItemRemoved(index)
         if (index > 0) notifyItemChanged(index - 1)
         if (index < messages.size) notifyItemChanged(index)
+        seenIndex = computeSeenIndex()
+        if (seenIndex >= 0) notifyItemChanged(seenIndex)
     }
 
     fun refreshAll() {
@@ -115,12 +132,13 @@ class MessageAdapter(
         val time = timeFormat.format(Date(message.timestamp))
         val first = isFirstInRun(position)
         val last = isLastInRun(position)
+        val seen = position == seenIndex
         when (holder) {
             is SentHolder -> {
                 val b = holder.binding
                 applySpacing(b.root, first)
                 b.tvMessage.text = message.text
-                bindTime(b.tvTime, time, last, message.pending)
+                bindSentFooter(b.footer, b.tvTime, b.seenAvatar, time, last, message.pending, seen)
                 bindQuote(b.quoteBlock, b.tvQuoteName, b.tvQuoteText, message)
                 bindReactions(b.tvReactions, message)
                 b.bubble.setOnLongClickListener {
@@ -132,7 +150,7 @@ class MessageAdapter(
                 val b = holder.binding
                 applySpacing(b.root, first)
                 b.tvMessage.text = message.text
-                bindTime(b.tvTime, time, last, false)
+                bindTime(b.tvTime, time, last)
                 bindAvatar(b.avatar, last)
                 bindQuote(b.quoteBlock, b.tvQuoteName, b.tvQuoteText, message)
                 bindReactions(b.tvReactions, message)
@@ -145,7 +163,7 @@ class MessageAdapter(
                 val b = holder.binding
                 applySpacing(b.root, first)
                 bindImage(b.ivImage, message.imagePath)
-                bindTime(b.tvTime, time, last, false)
+                bindSentFooter(b.footer, b.tvTime, b.seenAvatar, time, last, false, seen)
                 bindReactions(b.tvReactions, message)
                 b.ivImage.setOnClickListener { message.imagePath?.let(onImageClick) }
                 b.ivImage.setOnLongClickListener {
@@ -157,7 +175,7 @@ class MessageAdapter(
                 val b = holder.binding
                 applySpacing(b.root, first)
                 bindImage(b.ivImage, message.imagePath)
-                bindTime(b.tvTime, time, last, false)
+                bindTime(b.tvTime, time, last)
                 bindAvatar(b.avatar, last)
                 bindReactions(b.tvReactions, message)
                 b.ivImage.setOnClickListener { message.imagePath?.let(onImageClick) }
@@ -205,13 +223,38 @@ class MessageAdapter(
         root.setPadding(0, top, 0, bottom)
     }
 
-    private fun bindTime(view: TextView, time: String, show: Boolean, pending: Boolean) {
-        if (show || pending) {
+    private fun bindTime(view: TextView, time: String, show: Boolean) {
+        if (show) {
             view.visibility = View.VISIBLE
-            view.text = if (pending) "Waiting to send · $time" else time
+            view.text = time
         } else {
             view.visibility = View.GONE
         }
+    }
+
+    private fun bindSentFooter(
+        footer: View,
+        timeView: TextView,
+        seenAvatar: AvatarView,
+        time: String,
+        showTime: Boolean,
+        pending: Boolean,
+        seen: Boolean
+    ) {
+        val timeVisible = showTime || pending
+        if (timeVisible) {
+            timeView.visibility = View.VISIBLE
+            timeView.text = if (pending) "Waiting to send · $time" else time
+        } else {
+            timeView.visibility = View.GONE
+        }
+        if (seen) {
+            seenAvatar.visibility = View.VISIBLE
+            seenAvatar.set(nameProvider(), avatarProvider())
+        } else {
+            seenAvatar.visibility = View.GONE
+        }
+        footer.visibility = if (timeVisible || seen) View.VISIBLE else View.GONE
     }
 
     private fun bindAvatar(avatar: AvatarView, visible: Boolean) {

@@ -43,6 +43,7 @@ object ChatConnection {
     private const val TYPE_REACT: Byte = 11
     private const val TYPE_AVATAR: Byte = 12
     private const val TYPE_CHAT_NAME: Byte = 13
+    private const val TYPE_SEEN: Byte = 14
 
     private const val CHUNK_SIZE = 8192
     private const val MAX_CHUNK_SIZE = 65536
@@ -113,6 +114,7 @@ object ChatConnection {
 
     private var remoteRealName: String = ""
     private var remoteChatName: String = ""
+    private var lastSeenSentId: String? = null
 
     private val messages = mutableListOf<Message>()
     val history: List<Message> get() = messages
@@ -172,13 +174,26 @@ object ChatConnection {
 
     fun setChatVisible(visible: Boolean) {
         chatVisible = visible
-        if (visible) markRead()
+        if (visible) {
+            markRead()
+            maybeSendSeen()
+        }
     }
 
     fun markRead() {
         if (historyAddress.isBlank()) return
         ChatStore.clearUnread(historyAddress)
         Notifier.cancelMessages(historyAddress)
+    }
+
+    private fun maybeSendSeen() {
+        if (!chatVisible || state != State.CONNECTED) return
+        if (!Prefs.isReceipts(ctx())) return
+        val thread = connectedThread ?: return
+        val latest = messages.lastOrNull { it.type == MessageType.RECEIVED && !it.deleted } ?: return
+        if (latest.id == lastSeenSentId) return
+        lastSeenSentId = latest.id
+        sendExecutor.execute { thread.writeSeen(latest.id) }
     }
 
     private fun previewFor(message: Message): String {
@@ -808,6 +823,7 @@ object ChatConnection {
         loadRemote(device.address, device.name ?: device.address)
         silentConnect = false
         autoAttempts = 0
+        lastSeenSentId = null
         setRemoteTyping(false)
 
         if (remoteAddress != historyAddress) loadHistory(remoteAddress)
@@ -823,6 +839,7 @@ object ChatConnection {
         sendExecutor.execute { thread.writeHello(myName) }
         sendAvatar(thread)
         flushPending(thread)
+        maybeSendSeen()
     }
 
     private fun connectionLost(thread: ConnectedThread) {
@@ -924,6 +941,7 @@ object ChatConnection {
         )
         addToHistory(message)
         onIncoming(message)
+        maybeSendSeen()
     }
 
     private fun ackReceived(thread: ConnectedThread, id: String) {
@@ -939,6 +957,24 @@ object ChatConnection {
         messages[index] = updated
         persist()
         listeners.forEach { it.onMessageChanged(updated) }
+    }
+
+    private fun seenReceived(thread: ConnectedThread, id: String) {
+        if (thread !== connectedThread) return
+        val index = messages.indexOfFirst { it.id == id.take(MAX_ID_LENGTH) }
+        if (index < 0) return
+        val changed = mutableListOf<Message>()
+        for (i in 0..index) {
+            val m = messages[i]
+            if (m.type == MessageType.SENT && !m.seen && !m.deleted && !m.pending) {
+                val updated = m.copy(seen = true)
+                messages[i] = updated
+                changed.add(updated)
+            }
+        }
+        if (changed.isEmpty()) return
+        persist()
+        changed.forEach { c -> listeners.forEach { it.onMessageChanged(c) } }
     }
 
     private fun reactionReceived(thread: ConnectedThread, id: String, emoji: String) {
@@ -998,6 +1034,7 @@ object ChatConnection {
         addToHistory(message)
         onIncoming(message)
         listeners.forEach { it.onIncomingImageEnded() }
+        maybeSendSeen()
     }
 
     private class AcceptThread : Thread() {
@@ -1106,6 +1143,10 @@ object ChatConnection {
                         TYPE_ACK -> {
                             val id = input.readUTF()
                             handler.post { ackReceived(this@ConnectedThread, id) }
+                        }
+                        TYPE_SEEN -> {
+                            val id = input.readUTF()
+                            handler.post { seenReceived(this@ConnectedThread, id) }
                         }
                         TYPE_REACT -> {
                             val id = input.readUTF()
@@ -1282,6 +1323,17 @@ object ChatConnection {
         fun writeAck(id: String): Boolean = try {
             synchronized(output) {
                 output.writeByte(TYPE_ACK.toInt())
+                output.writeUTF(id)
+                output.flush()
+            }
+            true
+        } catch (e: IOException) {
+            false
+        }
+
+        fun writeSeen(id: String): Boolean = try {
+            synchronized(output) {
+                output.writeByte(TYPE_SEEN.toInt())
                 output.writeUTF(id)
                 output.flush()
             }

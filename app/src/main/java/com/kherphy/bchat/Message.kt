@@ -25,5 +25,6 @@ data class Message(
     val reactPending: Boolean = false,
     val saved: Boolean = false,
     val nameOld: String = "",
-    val nameNew: String = ""
+    val nameNew: String = "",
+    val seen: Boolean = false
 )

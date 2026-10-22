@@ -59,6 +59,7 @@ class SettingsActivity : AppCompatActivity() {
         binding.switchVisible.isChecked = Prefs.isVisible(this)
         binding.switchSave.isChecked = Prefs.isSaveHistory(this)
         binding.switchAsk.isChecked = Prefs.isAskBefore(this)
+        binding.switchReceipts.isChecked = Prefs.isReceipts(this)
         binding.switchAlerts.isChecked = Prefs.isAlerts(this)
         binding.switchPreview.isChecked = Prefs.isPreview(this)
 
@@ -88,6 +89,9 @@ class SettingsActivity : AppCompatActivity() {
         }
         binding.switchAsk.setOnCheckedChangeListener { _, checked ->
             Prefs.setAskBefore(this, checked)
+        }
+        binding.switchReceipts.setOnCheckedChangeListener { _, checked ->
+            Prefs.setReceipts(this, checked)
         }
         binding.switchAlerts.setOnCheckedChangeListener { _, checked ->
             Prefs.setAlerts(this, checked)

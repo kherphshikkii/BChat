@@ -4,25 +4,17 @@ import android.content.Context
 import android.os.Build
 
 object Prefs {
-    private const val KEY_ALERTS = "message_alerts"
-    private const val KEY_PREVIEW = "message_preview"
 
-    fun isAlerts(context: Context): Boolean = prefs(context).getBoolean(KEY_ALERTS, true)
-
-    fun setAlerts(context: Context, value: Boolean) {
-        prefs(context).edit().putBoolean(KEY_ALERTS, value).apply()
-    }
-
-    fun isPreview(context: Context): Boolean = prefs(context).getBoolean(KEY_PREVIEW, true)
-
-    fun setPreview(context: Context, value: Boolean) {
-        prefs(context).edit().putBoolean(KEY_PREVIEW, value).apply()
-    }
     private const val FILE = "bchat_prefs"
     private const val KEY_NAME = "username"
     private const val KEY_VISIBLE = "visible"
     private const val KEY_SAVE = "save_history"
     private const val KEY_ASK = "ask_before_connecting"
+    private const val KEY_ASKED_NOTIF = "asked_notifications"
+    private const val KEY_ALERTS = "message_alerts"
+    private const val KEY_PREVIEW = "message_preview"
+    private const val KEY_THEME = "theme_mode"
+    private const val KEY_RECEIPTS = "read_receipts"
 
     private fun prefs(context: Context) =
         context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
@@ -54,7 +46,25 @@ object Prefs {
     fun setAskBefore(context: Context, value: Boolean) {
         prefs(context).edit().putBoolean(KEY_ASK, value).apply()
     }
-    private const val KEY_THEME = "theme_mode"
+
+    fun hasAskedNotifications(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_ASKED_NOTIF, false)
+
+    fun setAskedNotifications(context: Context) {
+        prefs(context).edit().putBoolean(KEY_ASKED_NOTIF, true).apply()
+    }
+
+    fun isAlerts(context: Context): Boolean = prefs(context).getBoolean(KEY_ALERTS, true)
+
+    fun setAlerts(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean(KEY_ALERTS, value).apply()
+    }
+
+    fun isPreview(context: Context): Boolean = prefs(context).getBoolean(KEY_PREVIEW, true)
+
+    fun setPreview(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean(KEY_PREVIEW, value).apply()
+    }
 
     fun getTheme(context: Context): String =
         prefs(context).getString(KEY_THEME, "system") ?: "system"
@@ -62,13 +72,10 @@ object Prefs {
     fun setTheme(context: Context, value: String) {
         prefs(context).edit().putString(KEY_THEME, value).apply()
     }
-    private const val KEY_ASKED_NOTIF = "asked_notifications"
 
-    fun hasAskedNotifications(context: Context): Boolean =
-        prefs(context).getBoolean(KEY_ASKED_NOTIF, false)
+    fun isReceipts(context: Context): Boolean = prefs(context).getBoolean(KEY_RECEIPTS, true)
 
-    fun setAskedNotifications(context: Context) {
-        prefs(context).edit().putBoolean(KEY_ASKED_NOTIF, true).apply()
-
+    fun setReceipts(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean(KEY_RECEIPTS, value).apply()
     }
 }
