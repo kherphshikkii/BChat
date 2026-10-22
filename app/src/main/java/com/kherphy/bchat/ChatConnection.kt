@@ -42,6 +42,7 @@ object ChatConnection {
     private const val TYPE_REPLY: Byte = 10
     private const val TYPE_REACT: Byte = 11
     private const val TYPE_AVATAR: Byte = 12
+    private const val TYPE_CHAT_NAME: Byte = 13
 
     private const val CHUNK_SIZE = 8192
     private const val MAX_CHUNK_SIZE = 65536
@@ -50,6 +51,7 @@ object ChatConnection {
     private const val MAX_ID_LENGTH = 64
     private const val MAX_REPLY_LENGTH = 120
     private const val MAX_REACTION_LENGTH = 16
+    private const val MAX_NAME_LENGTH = 30
     private const val REQUEST_TIMEOUT_MS = 30_000L
     private const val TYPING_TIMEOUT_MS = 6_000L
     private const val AUTO_RETRY_MIN_MS = 45_000L
@@ -109,6 +111,9 @@ object ChatConnection {
     var chatVisible: Boolean = false
         private set
 
+    private var remoteRealName: String = ""
+    private var remoteChatName: String = ""
+
     private val messages = mutableListOf<Message>()
     val history: List<Message> get() = messages
     private var historyAddress: String = ""
@@ -145,6 +150,17 @@ object ChatConnection {
     }
 
     private fun ctx(): Context = checkNotNull(appContext)
+
+    fun realName(): String = remoteRealName.ifBlank { remoteAddress }
+
+    fun chatName(): String = remoteChatName
+
+    private fun loadRemote(address: String, fallback: String) {
+        remoteAddress = address
+        remoteChatName = ChatStore.getChatName(address)
+        remoteRealName = ChatStore.getRealName(address).ifBlank { fallback }
+        remoteName = remoteChatName.ifBlank { remoteRealName }
+    }
 
     fun addListener(listener: Listener) {
         listeners.addIfAbsent(listener)
@@ -235,10 +251,7 @@ object ChatConnection {
         acceptThread = null
 
         silentConnect = silent
-        if (!silent) {
-            remoteAddress = address
-            remoteName = device.name ?: address
-        }
+        if (!silent) loadRemote(address, device.name ?: address)
 
         val thread = ConnectThread(device)
         connectThread = thread
@@ -387,6 +400,67 @@ object ChatConnection {
         sendExecutor.execute { thread.writeAvatar(version, bytes) }
     }
 
+    fun setChatName(input: String): Boolean {
+        val address = remoteAddress
+        if (address.isBlank() || historyAddress != address) return false
+
+        val clean = input.trim().take(MAX_NAME_LENGTH)
+        val newChat = if (clean.isEmpty() || clean == remoteRealName) "" else clean
+        val oldChat = remoteChatName
+        if (newChat == oldChat) return true
+
+        val oldDisplay = remoteName
+        remoteChatName = newChat
+        remoteName = newChat.ifBlank { remoteRealName.ifBlank { address } }
+        ChatStore.setChatName(address, newChat, remoteName)
+
+        val text = if (newChat.isEmpty()) {
+            "You removed the chat name “$oldChat”."
+        } else {
+            "You changed the chat name from “$oldDisplay” to “$newChat”."
+        }
+        val oldForPeer = if (newChat.isEmpty()) oldChat else oldDisplay
+        val id = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        val myName = Prefs.getName(ctx())
+        val thread = connectedThread
+
+        if (state == State.CONNECTED && thread != null) {
+            sendExecutor.execute {
+                val ok = thread.writeChatName(id, myName, oldForPeer, newChat)
+                handler.post {
+                    addToHistory(nameNotice(text, now, id, oldForPeer, newChat, !ok))
+                    if (!ok) resetAutoAttempts()
+                }
+            }
+        } else {
+            addToHistory(nameNotice(text, now, id, oldForPeer, newChat, true))
+            resetAutoAttempts()
+        }
+
+        listeners.forEach { it.onRemoteNameChanged(remoteName) }
+        return true
+    }
+
+    private fun nameNotice(
+        text: String,
+        time: Long,
+        id: String,
+        oldName: String,
+        newName: String,
+        pending: Boolean
+    ): Message =
+        Message(
+            text = text,
+            timestamp = time,
+            type = MessageType.NOTICE,
+            id = id,
+            pending = pending,
+            saved = true,
+            nameOld = oldName,
+            nameNew = newName
+        )
+
     fun react(id: String, emoji: String) {
         val index = messages.indexOfFirst { it.id == id }
         if (index < 0) return
@@ -457,8 +531,7 @@ object ChatConnection {
 
     fun openSavedChat(address: String, name: String) {
         if (state == State.CONNECTED || state == State.CONNECTING) return
-        remoteAddress = address
-        remoteName = name
+        loadRemote(address, name)
         loadHistory(address)
     }
 
@@ -469,6 +542,8 @@ object ChatConnection {
         handler.removeCallbacks(autoRetry)
         Notifier.cancelAllMessages()
         AvatarStore.clearTheirs()
+        remoteChatName = ""
+        remoteName = remoteRealName.ifBlank { remoteName }
     }
 
     fun resetAutoAttempts() {
@@ -524,8 +599,9 @@ object ChatConnection {
     }
 
     private fun flushPending(thread: ConnectedThread) {
-        val waiting = messages.filter {
-            it.type == MessageType.SENT && it.pending && !it.deleted && it.imagePath == null
+        val queued = messages.filter {
+            (it.type == MessageType.SENT && it.pending && !it.deleted && it.imagePath == null) ||
+                    (it.type == MessageType.NOTICE && it.saved && it.pending)
         }
         val reacts = messages
             .filter { it.reactPending && !it.deleted }
@@ -533,14 +609,19 @@ object ChatConnection {
         val unsends = messages
             .filter { it.type == MessageType.SENT && it.deleted && it.unsendPending }
             .map { it.id }
-        if (waiting.isEmpty() && unsends.isEmpty() && reacts.isEmpty()) return
+        if (queued.isEmpty() && unsends.isEmpty() && reacts.isEmpty()) return
         sendExecutor.execute {
-            waiting.forEach { m ->
-                val replyId = m.replyToId
-                if (replyId == null) {
-                    thread.writeText(m.id, m.text)
+            val myName = Prefs.getName(ctx())
+            queued.forEach { m ->
+                if (m.type == MessageType.NOTICE) {
+                    thread.writeChatName(m.id, myName, m.nameOld, m.nameNew)
                 } else {
-                    thread.writeReply(m.id, m.text, replyId, m.replyText, m.replyMine)
+                    val replyId = m.replyToId
+                    if (replyId == null) {
+                        thread.writeText(m.id, m.text)
+                    } else {
+                        thread.writeReply(m.id, m.text, replyId, m.replyText, m.replyMine)
+                    }
                 }
             }
             val reacted = reacts.filter { thread.writeReact(it.first, it.second) }.map { it.first }
@@ -593,7 +674,7 @@ object ChatConnection {
 
     private fun addToHistory(message: Message) {
         messages.add(message)
-        if (message.type != MessageType.NOTICE) persist()
+        if (message.type != MessageType.NOTICE || message.saved) persist()
         listeners.forEach { it.onMessageAdded(message) }
     }
 
@@ -724,8 +805,7 @@ object ChatConnection {
 
     private fun onConnected(socket: BluetoothSocket) {
         val device = socket.remoteDevice
-        remoteAddress = device.address
-        remoteName = device.name ?: device.address
+        loadRemote(device.address, device.name ?: device.address)
         silentConnect = false
         autoAttempts = 0
         setRemoteTyping(false)
@@ -757,11 +837,46 @@ object ChatConnection {
 
     private fun helloReceived(thread: ConnectedThread, text: String) {
         if (thread !== connectedThread) return
-        val name = text.trim().take(30)
+        val name = text.trim().take(MAX_NAME_LENGTH)
         if (name.isEmpty()) return
-        remoteName = name
+        remoteRealName = name
+        if (remoteAddress.isNotBlank()) ChatStore.setRealName(remoteAddress, name)
+        remoteName = remoteChatName.ifBlank { name }
         persist()
-        listeners.forEach { it.onRemoteNameChanged(name) }
+        listeners.forEach { it.onRemoteNameChanged(remoteName) }
+    }
+
+    private fun chatNameReceived(
+        thread: ConnectedThread,
+        id: String,
+        sender: String,
+        oldName: String,
+        newName: String
+    ) {
+        if (thread !== connectedThread) return
+        val cleanId = id.take(MAX_ID_LENGTH)
+        sendExecutor.execute { thread.writeAck(cleanId) }
+        if (messages.any { it.id == cleanId }) return
+
+        val who = sender.trim().take(MAX_NAME_LENGTH).ifBlank { remoteRealName.ifBlank { "They" } }
+        val before = oldName.take(MAX_NAME_LENGTH)
+        val after = newName.take(MAX_NAME_LENGTH)
+        val text = if (after.isBlank()) {
+            "$who removed your chat name “$before”."
+        } else {
+            "$who changed your chat name from “$before” to “$after”."
+        }
+        addToHistory(
+            Message(
+                text = text,
+                timestamp = System.currentTimeMillis(),
+                type = MessageType.NOTICE,
+                id = cleanId,
+                saved = true,
+                nameOld = before,
+                nameNew = after
+            )
+        )
     }
 
     private fun avatarReceived(thread: ConnectedThread, version: Long, bytes: ByteArray) {
@@ -816,7 +931,10 @@ object ChatConnection {
         val index = messages.indexOfFirst { it.id == id.take(MAX_ID_LENGTH) }
         if (index < 0) return
         val old = messages[index]
-        if (old.type != MessageType.SENT || !old.pending) return
+        if (!old.pending) return
+        val queuedSent = old.type == MessageType.SENT
+        val queuedNotice = old.type == MessageType.NOTICE && old.saved
+        if (!queuedSent && !queuedNotice) return
         val updated = old.copy(pending = false)
         messages[index] = updated
         persist()
@@ -1004,6 +1122,15 @@ object ChatConnection {
                             input.readFully(data)
                             handler.post { avatarReceived(this@ConnectedThread, version, data) }
                         }
+                        TYPE_CHAT_NAME -> {
+                            val id = input.readUTF()
+                            val sender = input.readUTF()
+                            val oldName = input.readUTF()
+                            val newName = input.readUTF()
+                            handler.post {
+                                chatNameReceived(this@ConnectedThread, id, sender, oldName, newName)
+                            }
+                        }
                         TYPE_IMAGE_START -> startIncoming(input.readInt(), input.readUTF())
                         TYPE_IMAGE_CHUNK -> readChunk()
                         TYPE_IMAGE_END -> finishIncoming()
@@ -1181,6 +1308,20 @@ object ChatConnection {
                 output.writeLong(version)
                 output.writeInt(bytes.size)
                 output.write(bytes)
+                output.flush()
+            }
+            true
+        } catch (e: IOException) {
+            false
+        }
+
+        fun writeChatName(id: String, sender: String, oldName: String, newName: String): Boolean = try {
+            synchronized(output) {
+                output.writeByte(TYPE_CHAT_NAME.toInt())
+                output.writeUTF(id)
+                output.writeUTF(sender)
+                output.writeUTF(oldName)
+                output.writeUTF(newName)
                 output.flush()
             }
             true

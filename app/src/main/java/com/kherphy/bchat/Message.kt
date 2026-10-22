@@ -22,5 +22,8 @@ data class Message(
     val replyMine: Boolean = false,
     val myReaction: String = "",
     val theirReaction: String = "",
-    val reactPending: Boolean = false
+    val reactPending: Boolean = false,
+    val saved: Boolean = false,
+    val nameOld: String = "",
+    val nameNew: String = ""
 )

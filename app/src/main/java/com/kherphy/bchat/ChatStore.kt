@@ -47,12 +47,48 @@ object ChatStore {
     fun newImageFile(): File =
         File(imageDir(), "img_${System.currentTimeMillis()}_${(1000..9999).random()}.jpg")
 
+    private fun ensureEntry(address: String, name: String): JSONObject {
+        val existing = data.optJSONObject(address)
+        if (existing != null) return existing
+        val created = JSONObject()
+            .put("name", name)
+            .put("messages", JSONArray())
+            .put("unread", JSONArray())
+        data.put(address, created)
+        return created
+    }
+
+    fun getChatName(address: String): String =
+        data.optJSONObject(address)?.optString("chatName", "").orEmpty()
+
+    fun getRealName(address: String): String =
+        data.optJSONObject(address)?.optString("realName", "").orEmpty()
+
+    fun setRealName(address: String, realName: String) {
+        val target = ensureEntry(address, realName)
+        if (target.optString("realName", "") == realName) return
+        target.put("realName", realName)
+        if (target.optString("chatName", "").isEmpty()) target.put("name", realName)
+        write()
+    }
+
+    fun setChatName(address: String, chatName: String, displayName: String) {
+        val target = ensureEntry(address, displayName)
+        target.put("chatName", chatName)
+        target.put("name", displayName)
+        write()
+    }
+
     fun save(address: String, name: String, messages: List<Message>) {
         val chatMessages = messages
-            .filter { it.type != MessageType.NOTICE }
+            .filter { it.type != MessageType.NOTICE || it.saved }
             .takeLast(MAX_MESSAGES)
 
-        if (chatMessages.isEmpty()) {
+        val existing = data.optJSONObject(address)
+        val chatName = existing?.optString("chatName", "").orEmpty()
+        val realName = existing?.optString("realName", "").orEmpty()
+
+        if (chatMessages.isEmpty() && chatName.isEmpty() && realName.isEmpty()) {
             data.remove(address)
             write()
             return
@@ -71,6 +107,11 @@ object ChatStore {
                 .put("myReact", message.myReaction)
                 .put("theirReact", message.theirReaction)
                 .put("reactPending", message.reactPending)
+            if (message.type == MessageType.NOTICE) {
+                item.put("notice", true)
+                    .put("nameOld", message.nameOld)
+                    .put("nameNew", message.nameNew)
+            }
             message.imagePath?.let { path -> item.put("image", File(path).name) }
             message.replyToId?.let { replyId ->
                 item.put("replyId", replyId)
@@ -80,19 +121,24 @@ object ChatStore {
             array.put(item)
         }
 
-        val existing = data.optJSONObject(address)?.optJSONArray("unread")
+        val oldUnread = existing?.optJSONArray("unread")
         val savedIds = chatMessages.map { it.id }.toSet()
         val unread = JSONArray()
-        if (existing != null) {
-            for (i in 0 until existing.length()) {
-                val id = existing.optString(i)
+        if (oldUnread != null) {
+            for (i in 0 until oldUnread.length()) {
+                val id = oldUnread.optString(i)
                 if (id in savedIds) unread.put(id)
             }
         }
 
         data.put(
             address,
-            JSONObject().put("name", name).put("messages", array).put("unread", unread)
+            JSONObject()
+                .put("name", name)
+                .put("messages", array)
+                .put("unread", unread)
+                .put("chatName", chatName)
+                .put("realName", realName)
         )
         write()
     }
@@ -103,9 +149,26 @@ object ChatStore {
         val result = mutableListOf<Message>()
         for (i in 0 until array.length()) {
             val item = array.getJSONObject(i)
-            val type = if (item.optBoolean("sent")) MessageType.SENT else MessageType.RECEIVED
             val time = item.getLong("time")
             val id = item.optString("id", "").ifEmpty { UUID.randomUUID().toString() }
+
+            if (item.optBoolean("notice")) {
+                result.add(
+                    Message(
+                        text = item.optString("text", ""),
+                        timestamp = time,
+                        type = MessageType.NOTICE,
+                        id = id,
+                        pending = item.optBoolean("pending"),
+                        saved = true,
+                        nameOld = item.optString("nameOld", ""),
+                        nameNew = item.optString("nameNew", "")
+                    )
+                )
+                continue
+            }
+
+            val type = if (item.optBoolean("sent")) MessageType.SENT else MessageType.RECEIVED
             val imageName = item.optString("image", "")
             val replyId = item.optString("replyId", "").ifEmpty { null }
             val myReact = item.optString("myReact", "")
@@ -226,7 +289,7 @@ object ChatStore {
                     "${entry.optString("name", address)} unsent a message"
                 }
                 last.optString("image", "").isNotEmpty() -> "📷 Photo"
-                else -> last.getString("text")
+                else -> last.optString("text", "")
             }
             result.add(
                 Conversation(

@@ -8,7 +8,9 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.kherphy.bchat.databinding.ActivityProfileBinding
+import com.kherphy.bchat.databinding.DialogChatNameBinding
 
 class ProfileActivity : AppCompatActivity() {
 
@@ -54,6 +56,8 @@ class ProfileActivity : AppCompatActivity() {
             }
         }
 
+        binding.rowChatName.setOnClickListener { showChatNameDialog() }
+
         binding.btnAction.setOnClickListener {
             if (ChatConnection.state == ChatConnection.State.CONNECTED) {
                 ChatConnection.disconnect()
@@ -78,14 +82,58 @@ class ProfileActivity : AppCompatActivity() {
         ChatConnection.removeListener(listener)
     }
 
+    private fun showChatNameDialog() {
+        val dialogBinding = DialogChatNameBinding.inflate(layoutInflater)
+        val real = ChatConnection.realName()
+        val current = ChatConnection.chatName()
+
+        dialogBinding.tvHint.text =
+            "Choose what you call $real. They’ll see a note in the chat that you changed it."
+        dialogBinding.etChatName.setText(current)
+        dialogBinding.etChatName.setSelection(dialogBinding.etChatName.text?.length ?: 0)
+
+        val builder = MaterialAlertDialogBuilder(this)
+            .setTitle("Chat name")
+            .setView(dialogBinding.root)
+            .setPositiveButton("Save") { _, _ ->
+                ChatConnection.setChatName(dialogBinding.etChatName.text.toString())
+                render()
+            }
+            .setNegativeButton("Cancel", null)
+
+        if (current.isNotEmpty()) {
+            builder.setNeutralButton("Reset") { _, _ ->
+                ChatConnection.setChatName("")
+                render()
+            }
+        }
+        builder.show()
+    }
+
     private fun render() {
         val name = ChatConnection.remoteName.ifBlank { "Unknown device" }
+        val chatName = ChatConnection.chatName()
         val state = ChatConnection.state
         val connected = state == ChatConnection.State.CONNECTED
 
         binding.tvName.text = name
         binding.avatarBig.set(name, AvatarStore.theirFile(ChatConnection.remoteAddress))
         binding.onlineDot.visibility = if (connected) View.VISIBLE else View.GONE
+
+        if (chatName.isEmpty()) {
+            binding.tvRealName.visibility = View.GONE
+            binding.tvChatNameValue.text = "Not set"
+            binding.tvChatNameValue.setTextColor(
+                ContextCompat.getColor(this, R.color.text_secondary)
+            )
+        } else {
+            binding.tvRealName.visibility = View.VISIBLE
+            binding.tvRealName.text = ChatConnection.realName()
+            binding.tvChatNameValue.text = chatName
+            binding.tvChatNameValue.setTextColor(
+                ContextCompat.getColor(this, R.color.text_primary)
+            )
+        }
 
         val statusColor = when (state) {
             ChatConnection.State.CONNECTED -> R.color.status_connected
