@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="primary">#3B82D9</color>
+    <color name="primary_container">#1A2F4D</color>
+    <color name="surface">#121417</color>
+    <color name="bubble_received">#2A2D33</color>
+    <color name="input_bg">#23262B</color>
+    <color name="text_primary">#E8EAED</color>
+    <color name="text_secondary">#9AA0A6</color>
+    <color name="divider">#3C4043</color>
+    <color name="status_connected">#81C995</color>
+    <color name="status_disconnected">#F28B82</color>
+    <color name="error_container">#4A2523</color>
+    <color name="warning_bg">#3D3220</color>
+    <color name="warning_text">#F2C14E</color>
+    <color name="quote_received_bg">#1FFFFFFF</color>
+</resources>

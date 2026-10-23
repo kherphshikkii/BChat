@@ -1,6 +1,5 @@
 package com.kherphy.bchat
 
-import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
@@ -9,7 +8,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
@@ -19,17 +17,12 @@ import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
 import androidx.core.location.LocationManagerCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.kherphy.bchat.databinding.ActivityDevicesBinding
-import android.text.InputFilter
-import android.widget.EditText
-import android.widget.FrameLayout
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
 
 @SuppressLint("MissingPermission")
 class DevicesActivity : AppCompatActivity() {
@@ -53,6 +46,7 @@ class DevicesActivity : AppCompatActivity() {
         override fun onConnectionFailed(reason: String) {
             toast(reason)
         }
+
         override fun onIncomingRequest(name: String) {
             RequestDialog.show(this@DevicesActivity, name)
         }
@@ -100,38 +94,10 @@ class DevicesActivity : AppCompatActivity() {
         }
     }
 
-    private fun askForNameIfNeeded() {
-        if (Prefs.hasName(this)) return
-
-        val input = EditText(this).apply {
-            setText(Build.MODEL)
-            setSelectAllOnFocus(true)
-            setSingleLine()
-            filters = arrayOf(InputFilter.LengthFilter(30))
-        }
-        val container = FrameLayout(this).apply {
-            val pad = (24 * resources.displayMetrics.density).toInt()
-            setPadding(pad, pad / 2, pad, 0)
-            addView(input)
-        }
-
-        MaterialAlertDialogBuilder(this)
-            .setTitle("Your name")
-            .setMessage("Other phones see this name when you connect.")
-            .setView(container)
-            .setCancelable(false)
-            .setPositiveButton("Save") { _, _ ->
-                Prefs.setName(this, input.text.toString())
-            }
-            .show()
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
-        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
         super.onCreate(savedInstanceState)
 
-
-        if (!hasPermissions()) {
+        if (!BtPermissions.hasAll(this)) {
             startActivity(Intent(this, PermissionActivity::class.java))
             finish()
             return
@@ -154,7 +120,6 @@ class DevicesActivity : AppCompatActivity() {
         setupButtons()
         registerScanReceiver()
         startScan()
-        askForNameIfNeeded()
     }
 
     override fun onStart() {
@@ -193,7 +158,7 @@ class DevicesActivity : AppCompatActivity() {
 
         binding.btnVisible.setOnClickListener {
             val intent = Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE)
-                .putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300) // 300 seconds
+                .putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300)
             discoverableLauncher.launch(intent)
         }
     }
@@ -290,21 +255,6 @@ class DevicesActivity : AppCompatActivity() {
         val n = deviceAdapter.count
         val devices = if (n == 1) "1 device" else "$n devices"
         return if (scanningNow) "Scanning… $devices found" else "Scan finished · $devices found"
-    }
-
-    private fun hasPermissions(): Boolean {
-        val needed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(
-                Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.BLUETOOTH_ADVERTISE
-            )
-        } else {
-            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
-        }
-        return needed.all {
-            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
-        }
     }
 
     private fun isLocationOn(): Boolean {

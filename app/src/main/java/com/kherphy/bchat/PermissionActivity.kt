@@ -1,21 +1,17 @@
 package com.kherphy.bchat
 
-import android.Manifest
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
-import android.content.pm.PackageManager
 import com.kherphy.bchat.databinding.ActivityPermissionBinding
 
 class PermissionActivity : AppCompatActivity() {
@@ -27,11 +23,10 @@ class PermissionActivity : AppCompatActivity() {
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
-        if (hasAllPermissions()) continueToApp() else showDenied()
+        if (BtPermissions.hasAll(this)) continueToApp() else showDenied()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
@@ -48,7 +43,7 @@ class PermissionActivity : AppCompatActivity() {
             if (showingDenied) {
                 openAppSettings()
             } else {
-                permissionLauncher.launch(requiredPermissions())
+                permissionLauncher.launch(BtPermissions.required())
             }
         }
 
@@ -59,24 +54,8 @@ class PermissionActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (hasAllPermissions()) continueToApp()
+        if (BtPermissions.hasAll(this)) continueToApp()
     }
-
-    private fun requiredPermissions(): Array<String> =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(
-                Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.BLUETOOTH_ADVERTISE
-            )
-        } else {
-            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
-        }
-
-    private fun hasAllPermissions(): Boolean =
-        requiredPermissions().all {
-            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
-        }
 
     private fun continueToApp() {
         if (leaving) return
